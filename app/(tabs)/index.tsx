@@ -1,98 +1,241 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { router } from 'expo-router';
+import React from 'react';
+import {
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+const promotions = [
+  {
+    id: 'santander',
+    bank: 'Santander',
+    bonus: 500,
+    progress: 70,
+  },
+  {
+    id: 'millennium',
+    bank: 'Millennium',
+    bonus: 600,
+    progress: 40,
+  },
+  {
+    id: 'pekao',
+    bank: 'Pekao',
+    bonus: 400,
+    progress: 0,
+  },
+];
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const totalBonus = promotions.reduce(
+    (sum, promotion) => sum + promotion.bonus,
+    0
+  );
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+  return (
+    <SafeAreaView style={styles.container}>
+      <ScrollView contentContainerStyle={styles.content}>
+
+        <Text style={styles.logo}>
+          BankBonus
+        </Text>
+
+        <View style={styles.summaryCard}>
+          <Text style={styles.summaryLabel}>
+            Twoje możliwe bonusy
+          </Text>
+
+          <Text style={styles.summaryAmount}>
+            {totalBonus} zł
+          </Text>
+
+          <Text style={styles.summaryDescription}>
+            Potencjalnie do zdobycia
+          </Text>
+        </View>
+
+        <Text style={styles.sectionTitle}>
+          Aktywne promocje
+        </Text>
+
+        {promotions.map((promotion) => (
+          <View
+            key={promotion.id}
+            style={styles.promotionCard}
+          >
+            <Text style={styles.bankName}>
+              {promotion.bank}
+            </Text>
+
+            <Text style={styles.bonus}>
+              +{promotion.bonus} zł
+            </Text>
+
+            <View style={styles.progressBackground}>
+              <View
+                style={[
+                  styles.progress,
+                  {
+                    width: `${promotion.progress}%`,
+                  },
+                ]}
+              />
+            </View>
+
+            <View style={styles.progressRow}>
+              <Text style={styles.progressText}>
+                Postęp: {promotion.progress}%
+              </Text>
+
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={() =>
+                  router.push({
+                    pathname: '/promotion',
+                    params: {
+                      id: promotion.id,
+                    },
+                  })
+                }
+              >
+                <Text style={styles.details}>
+                  Zobacz →
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ))}
+
+        <TouchableOpacity
+          style={styles.allButton}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.allButtonText}>
+            Zobacz wszystkie promocje
+          </Text>
+        </TouchableOpacity>
+
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  container: {
+    flex: 1,
+    backgroundColor: '#F5F6FA',
   },
-  stepContainer: {
-    gap: 8,
+
+  content: {
+    padding: 20,
+    paddingBottom: 40,
+  },
+
+  logo: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#111827',
+    marginBottom: 24,
+  },
+
+  summaryCard: {
+    backgroundColor: '#111827',
+    borderRadius: 20,
+    padding: 24,
+    marginBottom: 28,
+  },
+
+  summaryLabel: {
+    color: '#D1D5DB',
+    fontSize: 15,
     marginBottom: 8,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+
+  summaryAmount: {
+    color: '#FFFFFF',
+    fontSize: 38,
+    fontWeight: '800',
+  },
+
+  summaryDescription: {
+    color: '#9CA3AF',
+    marginTop: 6,
+  },
+
+  sectionTitle: {
+    fontSize: 21,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 14,
+  },
+
+  promotionCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 20,
+    marginBottom: 14,
+  },
+
+  bankName: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+  },
+
+  bonus: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#16A34A',
+    marginTop: 4,
+    marginBottom: 16,
+  },
+
+  progressBackground: {
+    height: 8,
+    backgroundColor: '#E5E7EB',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+
+  progress: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#2563EB',
+  },
+
+  progressRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+
+  progressText: {
+    fontSize: 13,
+    color: '#6B7280',
+  },
+
+  details: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#2563EB',
+  },
+
+  allButton: {
+    backgroundColor: '#2563EB',
+    borderRadius: 14,
+    padding: 17,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+
+  allButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
   },
 });
