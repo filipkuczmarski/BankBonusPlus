@@ -1,63 +1,108 @@
+import { supabase } from '@/lib/supabase';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-const promotions = {
-  santander: {
-    bank: 'Santander',
-    bonus: 500,
-    tasks: [
-      'Załóż konto osobiste',
-      'Wykonaj 5 płatności kartą',
-      'Wpłać minimum 1000 zł',
-      'Zaloguj się do aplikacji bankowej',
-    ],
-  },
+type Promotion = {
+  id: string;
+  title: string;
+  bonus_amount: number;
+  description: string | null;
+  banks: {
+    name: string;
+    logo_url: string | null;
+  };
+};
 
-  millennium: {
-    bank: 'Millennium',
-    bonus: 600,
-    tasks: [
-      'Załóż konto osobiste',
-      'Wykonaj 5 płatności kartą',
-      'Zapewnij wpływ minimum 2000 zł',
-      'Wykonaj płatność mobilną',
-    ],
-  },
-
-  pekao: {
-    bank: 'Pekao',
-    bonus: 400,
-    tasks: [
-      'Załóż konto osobiste',
-      'Zamów kartę',
-      'Wykonaj 3 płatności kartą',
-      'Zaloguj się do aplikacji',
-    ],
-  },
+type Task = {
+  id: string;
+  promotion_id: string;
+  title: string;
+  description: string | null;
+  task_order: number;
 };
 
 export default function PromotionScreen() {
   const { id } = useLocalSearchParams();
 
-  const promotionId = Array.isArray(id)
-    ? id[0]
-    : id;
+  const promotionId = Array.isArray(id) ? id[0] : id;
 
-  const promotion =
-    promotions[promotionId as keyof typeof promotions] ??
-    promotions.santander;
+  const [promotion, setPromotion] = useState<Promotion | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [completed, setCompleted] = useState<boolean[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const [completed, setCompleted] = useState<boolean[]>(
-    promotion.tasks.map(() => false)
-  );
+  useEffect(() => {
+    const loadPromotion = async () => {
+      if (!promotionId) {
+        setError('Nie znaleziono promocji.');
+        setLoading(false);
+        return;
+      }
+
+      const { data: promotionData, error: promotionError } =
+        await supabase
+          .from('promotions')
+          .select(`
+            id,
+            title,
+            bonus_amount,
+            description,
+            banks (
+              name,
+              logo_url
+            )
+          `)
+          .eq('id', promotionId)
+          .single();
+
+      if (promotionError) {
+        console.error('PROMOTION ERROR:', promotionError);
+        setError('Nie udało się pobrać promocji.');
+        setLoading(false);
+        return;
+      }
+
+      const { data: tasksData, error: tasksError } =
+        await supabase
+          .from('tasks')
+          .select(`
+            id,
+            promotion_id,
+            title,
+            description,
+            task_order
+          `)
+          .eq('promotion_id', promotionId)
+          .order('task_order', { ascending: true });
+
+      if (tasksError) {
+        console.error('TASKS ERROR:', tasksError);
+        setError('Nie udało się pobrać zadań.');
+        setLoading(false);
+        return;
+      }
+
+      console.log('PROMOTION:', promotionData);
+      console.log('TASKS:', tasksData);
+
+      setPromotion(promotionData as Promotion);
+      setTasks(tasksData as Task[]);
+      setCompleted((tasksData || []).map(() => false));
+      setLoading(false);
+    };
+
+    loadPromotion();
+  }, [promotionId]);
 
   const toggleTask = (index: number) => {
     setCompleted((current) =>
@@ -67,12 +112,43 @@ export default function PromotionScreen() {
     );
   };
 
-  const completedCount =
-    completed.filter(Boolean).length;
+  const completedCount = completed.filter(Boolean).length;
 
-  const progress = Math.round(
-    (completedCount / promotion.tasks.length) * 100
-  );
+  const progress =
+    tasks.length > 0
+      ? Math.round((completedCount / tasks.length) * 100)
+      : 0;
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <ActivityIndicator size="large" />
+
+        <Text style={styles.loadingText}>
+          Ładowanie promocji...
+        </Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (error || !promotion) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <Text style={styles.errorText}>
+          {error || 'Nie znaleziono promocji.'}
+        </Text>
+
+        <TouchableOpacity
+          style={styles.retryButton}
+          onPress={() => router.back()}
+        >
+          <Text style={styles.retryButtonText}>
+            Wróć
+          </Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -88,17 +164,22 @@ export default function PromotionScreen() {
         </TouchableOpacity>
 
         <Text style={styles.bank}>
-          {promotion.bank}
+          {promotion.banks.name}
         </Text>
 
         <Text style={styles.title}>
-          Zdobądź do {promotion.bonus} zł
+          {promotion.title}
         </Text>
 
-        <Text style={styles.description}>
-          Wykonaj wszystkie wymagane kroki,
-          aby otrzymać bonus.
+        <Text style={styles.bonus}>
+          +{promotion.bonus_amount} zł
         </Text>
+
+        {promotion.description && (
+          <Text style={styles.description}>
+            {promotion.description}
+          </Text>
+        )}
 
         <View style={styles.progressCard}>
 
@@ -124,7 +205,7 @@ export default function PromotionScreen() {
           </View>
 
           <Text style={styles.progressText}>
-            {completedCount} z {promotion.tasks.length} wykonanych
+            {completedCount} z {tasks.length} wykonanych
           </Text>
 
         </View>
@@ -133,10 +214,10 @@ export default function PromotionScreen() {
           Co musisz zrobić?
         </Text>
 
-        {promotion.tasks.map((task, index) => (
+        {tasks.map((task, index) => (
 
           <TouchableOpacity
-            key={task}
+            key={task.id}
             style={styles.task}
             onPress={() => toggleTask(index)}
             activeOpacity={0.7}
@@ -158,15 +239,25 @@ export default function PromotionScreen() {
 
             </View>
 
-            <Text
-              style={[
-                styles.taskText,
-                completed[index] &&
-                  styles.taskCompleted,
-              ]}
-            >
-              {task}
-            </Text>
+            <View style={styles.taskContent}>
+
+              <Text
+                style={[
+                  styles.taskText,
+                  completed[index] &&
+                    styles.taskCompleted,
+                ]}
+              >
+                {task.title}
+              </Text>
+
+              {task.description && (
+                <Text style={styles.taskDescription}>
+                  {task.description}
+                </Text>
+              )}
+
+            </View>
 
           </TouchableOpacity>
 
@@ -181,8 +272,7 @@ export default function PromotionScreen() {
             </Text>
 
             <Text style={styles.successText}>
-              Spełniłeś wszystkie warunki
-              promocji.
+              Spełniłeś wszystkie warunki promocji.
             </Text>
 
           </View>
@@ -195,7 +285,6 @@ export default function PromotionScreen() {
 }
 
 const styles = StyleSheet.create({
-
   container: {
     flex: 1,
     backgroundColor: '#F5F6FA',
@@ -227,6 +316,13 @@ const styles = StyleSheet.create({
     fontSize: 32,
     fontWeight: '800',
     color: '#111827',
+  },
+
+  bonus: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#16A34A',
+    marginTop: 8,
   },
 
   description: {
@@ -319,8 +415,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
 
-  taskText: {
+  taskContent: {
     flex: 1,
+  },
+
+  taskText: {
     fontSize: 16,
     color: '#111827',
   },
@@ -328,6 +427,13 @@ const styles = StyleSheet.create({
   taskCompleted: {
     color: '#9CA3AF',
     textDecorationLine: 'line-through',
+  },
+
+  taskDescription: {
+    fontSize: 13,
+    color: '#6B7280',
+    marginTop: 4,
+    lineHeight: 18,
   },
 
   successCard: {
@@ -349,4 +455,36 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
 
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#F5F6FA',
+    padding: 20,
+  },
+
+  loadingText: {
+    marginTop: 12,
+    fontSize: 15,
+    color: '#6B7280',
+  },
+
+  errorText: {
+    fontSize: 16,
+    color: '#DC2626',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+
+  retryButton: {
+    backgroundColor: '#2563EB',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+
+  retryButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
 });

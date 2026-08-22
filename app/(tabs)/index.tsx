@@ -1,6 +1,8 @@
+import { supabase } from '@/lib/supabase';
 import { router } from 'expo-router';
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -9,32 +11,90 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-const promotions = [
-  {
-    id: 'santander',
-    bank: 'Santander',
-    bonus: 500,
-    progress: 70,
-  },
-  {
-    id: 'millennium',
-    bank: 'Millennium',
-    bonus: 600,
-    progress: 40,
-  },
-  {
-    id: 'pekao',
-    bank: 'Pekao',
-    bonus: 400,
-    progress: 0,
-  },
-];
+type Promotion = {
+  id: string;
+  title: string;
+  bonus_amount: number;
+  description: string | null;
+  status: string;
+  banks: {
+    name: string;
+    logo_url: string | null;
+  };
+};
 
 export default function HomeScreen() {
+  const [promotions, setPromotions] = useState<Promotion[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadPromotions = async () => {
+      const { data, error } = await supabase
+        .from('promotions')
+        .select(`
+          id,
+          title,
+          bonus_amount,
+          description,
+          status,
+          banks (
+            name,
+            logo_url
+          )
+        `)
+        .eq('status', 'active');
+
+      if (error) {
+        console.error('SUPABASE ERROR:', error);
+        setError('Nie udało się pobrać promocji.');
+        setLoading(false);
+        return;
+      }
+
+      console.log('PROMOTIONS FROM SUPABASE:', data);
+
+      setPromotions(data as Promotion[]);
+      setLoading(false);
+    };
+
+    loadPromotions();
+  }, []);
+
   const totalBonus = promotions.reduce(
-    (sum, promotion) => sum + promotion.bonus,
+    (sum, promotion) => sum + promotion.bonus_amount,
     0
   );
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <ActivityIndicator size="large" />
+        <Text style={styles.loadingText}>
+          Ładowanie promocji...
+        </Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (error) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <Text style={styles.errorText}>
+          {error}
+        </Text>
+
+        <TouchableOpacity
+          style={styles.retryButton}
+          onPress={() => router.replace('/')}
+        >
+          <Text style={styles.retryButtonText}>
+            Spróbuj ponownie
+          </Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -68,11 +128,15 @@ export default function HomeScreen() {
             style={styles.promotionCard}
           >
             <Text style={styles.bankName}>
-              {promotion.bank}
+              {promotion.banks.name}
+            </Text>
+
+            <Text style={styles.promotionTitle}>
+              {promotion.title}
             </Text>
 
             <Text style={styles.bonus}>
-              +{promotion.bonus} zł
+              +{promotion.bonus_amount} zł
             </Text>
 
             <View style={styles.progressBackground}>
@@ -80,7 +144,7 @@ export default function HomeScreen() {
                 style={[
                   styles.progress,
                   {
-                    width: `${promotion.progress}%`,
+                    width: '0%',
                   },
                 ]}
               />
@@ -88,7 +152,7 @@ export default function HomeScreen() {
 
             <View style={styles.progressRow}>
               <Text style={styles.progressText}>
-                Postęp: {promotion.progress}%
+                Postęp: 0%
               </Text>
 
               <TouchableOpacity
@@ -186,11 +250,17 @@ const styles = StyleSheet.create({
     color: '#111827',
   },
 
+  promotionTitle: {
+    fontSize: 14,
+    color: '#6B7280',
+    marginTop: 4,
+  },
+
   bonus: {
     fontSize: 16,
     fontWeight: '600',
     color: '#16A34A',
-    marginTop: 4,
+    marginTop: 8,
     marginBottom: 16,
   },
 
@@ -237,5 +307,38 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '700',
+  },
+
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#F5F6FA',
+    padding: 20,
+  },
+
+  loadingText: {
+    marginTop: 12,
+    fontSize: 15,
+    color: '#6B7280',
+  },
+
+  errorText: {
+    fontSize: 16,
+    color: '#DC2626',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+
+  retryButton: {
+    backgroundColor: '#2563EB',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+
+  retryButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
   },
 });
