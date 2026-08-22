@@ -1,6 +1,7 @@
 import { supabase } from '@/lib/supabase';
-import { router } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router, useFocusEffect } from 'expo-router';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -23,14 +24,25 @@ type Promotion = {
   };
 };
 
+type PromotionProgress = {
+  completed: boolean[];
+};
+
+type PromotionWithProgress = Promotion & {
+  progress: number;
+};
+
 export default function HomeScreen() {
-  const [promotions, setPromotions] = useState<Promotion[]>([]);
+  const [promotions, setPromotions] = useState<PromotionWithProgress[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const loadPromotions = async () => {
-      const { data, error } = await supabase
+  const loadPromotions = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const { data, error: supabaseError } = await supabase
         .from('promotions')
         .select(`
           id,
@@ -45,22 +57,106 @@ export default function HomeScreen() {
         `)
         .eq('status', 'active');
 
-      if (error) {
-        console.error('SUPABASE ERROR:', error);
+      if (supabaseError) {
+        console.error('SUPABASE ERROR:', supabaseError);
         setError('Nie udało się pobrać promocji.');
         setLoading(false);
         return;
       }
 
-      console.log('PROMOTIONS FROM SUPABASE:', data);
+      const promotionsFromSupabase = (data || []) as Promotion[];
 
-      setPromotions(data as Promotion[]);
+      const promotionsWithProgress: PromotionWithProgress[] =
+        await Promise.all(
+          promotionsFromSupabase.map(async (promotion) => {
+            const storageKey = `bankbonus_progress_${promotion.id}`;
+
+            try {
+              const saved = await AsyncStorage.getItem(storageKey);
+
+              console.log('DASHBOARD READING:', {
+  storageKey,
+  saved,
+});
+
+              if (!saved) {
+                return {
+                  ...promotion,
+                  progress: 0,
+                };
+              }
+
+              
+
+              
+              const parsed = JSON.parse(saved);
+
+                const completed = Array.isArray(parsed)
+                ? parsed
+              : Array.isArray(parsed.completed)
+               ? parsed.completed
+              : [];
+              const completedCount =
+                completed.filter(Boolean).length;
+
+              /*
+               * Jeżeli nie mamy jeszcze zadań w Dashboardzie,
+               * nie znamy ich całkowitej liczby.
+               *
+               * W tym momencie korzystamy z liczby zapisanych
+               * elementów checklisty.
+               */
+              const progress =
+                completed.length > 0
+                  ? Math.round(
+                      (completedCount / completed.length) * 100
+                    )
+                  : 0;
+
+              return {
+                ...promotion,
+                progress,
+              };
+            } catch (storageError) {
+              console.error(
+                'ASYNC STORAGE READ ERROR:',
+                storageError
+              );
+
+              return {
+                ...promotion,
+                progress: 0,
+              };
+            }
+          })
+        );
+
+      setPromotions(promotionsWithProgress);
+    } catch (err) {
+      console.error('LOAD PROMOTIONS ERROR:', err);
+      setError('Wystąpił nieoczekiwany błąd.');
+    } finally {
       setLoading(false);
-    };
-
-    loadPromotions();
+    }
   }, []);
 
+  React.useEffect(() => {
+    loadPromotions();
+  }, [loadPromotions]);
+
+  /*
+   * Odświeżamy Dashboard po powrocie z ekranu promocji.
+   * Dzięki temu po zaznaczeniu zadań i kliknięciu "Wróć"
+   * Dashboard pokaże aktualny postęp.
+   */
+  useFocusEffect(
+  React.useCallback(() => {
+    loadPromotions();
+  }, [loadPromotions])
+);
+  /*
+   * Suma wszystkich możliwych bonusów.
+   */
   const totalBonus = promotions.reduce(
     (sum, promotion) => sum + promotion.bonus_amount,
     0
@@ -70,6 +166,7 @@ export default function HomeScreen() {
     return (
       <SafeAreaView style={styles.loadingContainer}>
         <ActivityIndicator size="large" />
+
         <Text style={styles.loadingText}>
           Ładowanie promocji...
         </Text>
@@ -86,7 +183,7 @@ export default function HomeScreen() {
 
         <TouchableOpacity
           style={styles.retryButton}
-          onPress={() => router.replace('/')}
+          onPress={loadPromotions}
         >
           <Text style={styles.retryButtonText}>
             Spróbuj ponownie
@@ -144,7 +241,7 @@ export default function HomeScreen() {
                 style={[
                   styles.progress,
                   {
-                    width: '0%',
+                    width: `${promotion.progress}%`,
                   },
                 ]}
               />
@@ -152,7 +249,7 @@ export default function HomeScreen() {
 
             <View style={styles.progressRow}>
               <Text style={styles.progressText}>
-                Postęp: 0%
+                Postęp: {promotion.progress}%
               </Text>
 
               <TouchableOpacity
@@ -173,6 +270,18 @@ export default function HomeScreen() {
             </View>
           </View>
         ))}
+
+        {promotions.length === 0 && (
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyTitle}>
+              Brak aktywnych promocji
+            </Text>
+
+            <Text style={styles.emptyText}>
+              Aktualnie nie znaleziono żadnych aktywnych promocji.
+            </Text>
+          </View>
+        )}
 
         <TouchableOpacity
           style={styles.allButton}
@@ -307,6 +416,26 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '700',
+  },
+
+  emptyCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 20,
+    marginBottom: 14,
+  },
+
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#111827',
+  },
+
+  emptyText: {
+    fontSize: 14,
+    color: '#6B7280',
+    marginTop: 6,
+    lineHeight: 20,
   },
 
   loadingContainer: {

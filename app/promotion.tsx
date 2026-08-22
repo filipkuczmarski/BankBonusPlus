@@ -44,10 +44,10 @@ export default function PromotionScreen() {
 
   /*
    * Unikalny klucz zapisu dla każdej promocji.
-   * Dzięki temu każda promocja ma własny postęp.
+   * Ten sam klucz jest używany przez Dashboard.
    */
   const storageKey = promotionId
-    ? `bankbonus_progress_${promotionId}`
+    ? 'bankbonus_progress_' + promotionId
     : null;
 
   useEffect(() => {
@@ -58,21 +58,26 @@ export default function PromotionScreen() {
         return;
       }
 
-      const { data: promotionData, error: promotionError } =
-        await supabase
-          .from('promotions')
-          .select(`
-            id,
-            title,
-            bonus_amount,
-            description,
-            banks (
-              name,
-              logo_url
-            )
-          `)
-          .eq('id', promotionId)
-          .single();
+      /*
+       * Pobieramy dane promocji z Supabase.
+       */
+      const {
+        data: promotionData,
+        error: promotionError,
+      } = await supabase
+        .from('promotions')
+        .select(`
+          id,
+          title,
+          bonus_amount,
+          description,
+          banks (
+            name,
+            logo_url
+          )
+        `)
+        .eq('id', promotionId)
+        .single();
 
       if (promotionError) {
         console.error('PROMOTION ERROR:', promotionError);
@@ -81,18 +86,23 @@ export default function PromotionScreen() {
         return;
       }
 
-      const { data: tasksData, error: tasksError } =
-        await supabase
-          .from('tasks')
-          .select(`
-            id,
-            promotion_id,
-            title,
-            description,
-            task_order
-          `)
-          .eq('promotion_id', promotionId)
-          .order('task_order', { ascending: true });
+      /*
+       * Pobieramy zadania przypisane do promocji.
+       */
+      const {
+        data: tasksData,
+        error: tasksError,
+      } = await supabase
+        .from('tasks')
+        .select(`
+          id,
+          promotion_id,
+          title,
+          description,
+          task_order
+        `)
+        .eq('promotion_id', promotionId)
+        .order('task_order', { ascending: true });
 
       if (tasksError) {
         console.error('TASKS ERROR:', tasksError);
@@ -104,8 +114,8 @@ export default function PromotionScreen() {
       const loadedTasks = (tasksData || []) as Task[];
 
       /*
-       * Sprawdzamy, czy na telefonie istnieje już
-       * zapisany postęp dla tej promocji.
+       * Sprawdzamy, czy istnieje zapisany postęp
+       * dla tej promocji.
        */
       let savedProgress: boolean[] | null = null;
 
@@ -116,11 +126,29 @@ export default function PromotionScreen() {
           if (saved) {
             const parsed = JSON.parse(saved);
 
+            /*
+             * Obsługujemy zapis bezpośrednio jako tablicę:
+             * [true, false, true]
+             */
             if (
               Array.isArray(parsed) &&
               parsed.length === loadedTasks.length
             ) {
               savedProgress = parsed;
+            }
+
+            /*
+             * Obsługujemy również ewentualny zapis
+             * w formacie:
+             * { completed: [true, false, true] }
+             */
+            if (
+              !savedProgress &&
+              parsed &&
+              Array.isArray(parsed.completed) &&
+              parsed.completed.length === loadedTasks.length
+            ) {
+              savedProgress = parsed.completed;
             }
           }
         } catch (storageError) {
@@ -135,14 +163,13 @@ export default function PromotionScreen() {
       setTasks(loadedTasks);
 
       /*
-       * Jeżeli znaleźliśmy zapisany stan,
-       * używamy go.
+       * Jeśli znaleźliśmy zapisany postęp,
+       * przywracamy go.
        *
-       * Jeżeli nie — wszystkie zadania są odznaczone.
+       * Jeśli nie — wszystkie zadania zaczynają jako false.
        */
       setCompleted(
-        savedProgress ??
-          loadedTasks.map(() => false)
+        savedProgress ?? loadedTasks.map(() => false)
       );
 
       setLoading(false);
@@ -152,25 +179,30 @@ export default function PromotionScreen() {
   }, [promotionId, storageKey]);
 
   /*
-   * Zmiana stanu zadania.
+   * Zaznaczenie / odznaczenie zadania.
    */
-  const toggleTask = async (index: number) => {
+  const toggleTask = (index: number) => {
     setCompleted((current) => {
-      const updated = current.map((value, i) =>
-        i === index ? !value : value
-      );
+      const updated = current.map((value, i) => {
+        if (i === index) {
+          return !value;
+        }
+
+        return value;
+      });
 
       /*
-       * Zapisujemy nowy stan na telefonie.
+       * Zapisujemy nowy stan lokalnie na telefonie.
        */
       if (storageKey) {
+        
         AsyncStorage.setItem(
           storageKey,
           JSON.stringify(updated)
-        ).catch((error) => {
+        ).catch((storageError) => {
           console.error(
             'ASYNC STORAGE WRITE ERROR:',
-            error
+            storageError
           );
         });
       }
@@ -179,8 +211,14 @@ export default function PromotionScreen() {
     });
   };
 
+  /*
+   * Liczba wykonanych zadań.
+   */
   const completedCount = completed.filter(Boolean).length;
 
+  /*
+   * Procent postępu.
+   */
   const progress =
     tasks.length > 0
       ? Math.round(
@@ -188,6 +226,9 @@ export default function PromotionScreen() {
         )
       : 0;
 
+  /*
+   * Ekran ładowania.
+   */
   if (loading) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
@@ -200,6 +241,9 @@ export default function PromotionScreen() {
     );
   }
 
+  /*
+   * Ekran błędu.
+   */
   if (error || !promotion) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
@@ -219,6 +263,9 @@ export default function PromotionScreen() {
     );
   }
 
+  /*
+   * Główny ekran promocji.
+   */
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -226,6 +273,7 @@ export default function PromotionScreen() {
         <TouchableOpacity
           onPress={() => router.back()}
           style={styles.backButton}
+          activeOpacity={0.7}
         >
           <Text style={styles.backText}>
             ← Wróć
@@ -284,7 +332,6 @@ export default function PromotionScreen() {
         </Text>
 
         {tasks.map((task, index) => (
-
           <TouchableOpacity
             key={task.id}
             style={styles.task}
@@ -295,17 +342,14 @@ export default function PromotionScreen() {
             <View
               style={[
                 styles.checkbox,
-                completed[index] &&
-                  styles.checkboxCompleted,
+                completed[index] && styles.checkboxCompleted,
               ]}
             >
-
               {completed[index] && (
                 <Text style={styles.checkmark}>
                   ✓
                 </Text>
               )}
-
             </View>
 
             <View style={styles.taskContent}>
@@ -313,8 +357,7 @@ export default function PromotionScreen() {
               <Text
                 style={[
                   styles.taskText,
-                  completed[index] &&
-                    styles.taskCompleted,
+                  completed[index] && styles.taskCompleted,
                 ]}
               >
                 {task.title}
@@ -329,11 +372,9 @@ export default function PromotionScreen() {
             </View>
 
           </TouchableOpacity>
-
         ))}
 
         {progress === 100 && (
-
           <View style={styles.successCard}>
 
             <Text style={styles.successTitle}>
@@ -345,7 +386,6 @@ export default function PromotionScreen() {
             </Text>
 
           </View>
-
         )}
 
       </ScrollView>
