@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
@@ -40,6 +41,14 @@ export default function PromotionScreen() {
   const [completed, setCompleted] = useState<boolean[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  /*
+   * Unikalny klucz zapisu dla każdej promocji.
+   * Dzięki temu każda promocja ma własny postęp.
+   */
+  const storageKey = promotionId
+    ? `bankbonus_progress_${promotionId}`
+    : null;
 
   useEffect(() => {
     const loadPromotion = async () => {
@@ -92,31 +101,91 @@ export default function PromotionScreen() {
         return;
       }
 
-      console.log('PROMOTION:', promotionData);
-      console.log('TASKS:', tasksData);
+      const loadedTasks = (tasksData || []) as Task[];
+
+      /*
+       * Sprawdzamy, czy na telefonie istnieje już
+       * zapisany postęp dla tej promocji.
+       */
+      let savedProgress: boolean[] | null = null;
+
+      if (storageKey) {
+        try {
+          const saved = await AsyncStorage.getItem(storageKey);
+
+          if (saved) {
+            const parsed = JSON.parse(saved);
+
+            if (
+              Array.isArray(parsed) &&
+              parsed.length === loadedTasks.length
+            ) {
+              savedProgress = parsed;
+            }
+          }
+        } catch (storageError) {
+          console.error(
+            'ASYNC STORAGE READ ERROR:',
+            storageError
+          );
+        }
+      }
 
       setPromotion(promotionData as Promotion);
-      setTasks(tasksData as Task[]);
-      setCompleted((tasksData || []).map(() => false));
+      setTasks(loadedTasks);
+
+      /*
+       * Jeżeli znaleźliśmy zapisany stan,
+       * używamy go.
+       *
+       * Jeżeli nie — wszystkie zadania są odznaczone.
+       */
+      setCompleted(
+        savedProgress ??
+          loadedTasks.map(() => false)
+      );
+
       setLoading(false);
     };
 
     loadPromotion();
-  }, [promotionId]);
+  }, [promotionId, storageKey]);
 
-  const toggleTask = (index: number) => {
-    setCompleted((current) =>
-      current.map((value, i) =>
+  /*
+   * Zmiana stanu zadania.
+   */
+  const toggleTask = async (index: number) => {
+    setCompleted((current) => {
+      const updated = current.map((value, i) =>
         i === index ? !value : value
-      )
-    );
+      );
+
+      /*
+       * Zapisujemy nowy stan na telefonie.
+       */
+      if (storageKey) {
+        AsyncStorage.setItem(
+          storageKey,
+          JSON.stringify(updated)
+        ).catch((error) => {
+          console.error(
+            'ASYNC STORAGE WRITE ERROR:',
+            error
+          );
+        });
+      }
+
+      return updated;
+    });
   };
 
   const completedCount = completed.filter(Boolean).length;
 
   const progress =
     tasks.length > 0
-      ? Math.round((completedCount / tasks.length) * 100)
+      ? Math.round(
+          (completedCount / tasks.length) * 100
+        )
       : 0;
 
   if (loading) {
