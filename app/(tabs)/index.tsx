@@ -1,5 +1,5 @@
+
 import { supabase } from '@/lib/supabase';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import {
@@ -21,20 +21,37 @@ type Promotion = {
   banks: {
     name: string;
     logo_url: string | null;
-  };
+  } | null;
 };
 
-type PromotionProgress = {
-  completed: boolean[];
+type Task = {
+  id: string;
+  promotion_id: string;
+  title: string;
+  description: string | null;
+  task_order: number;
+};
+
+type UserTaskProgress = {
+  id: string;
+  user_id: string;
+  task_id: string;
+  completed: boolean;
 };
 
 type PromotionWithProgress = Promotion & {
   progress: number;
+  completedTasks: number;
+  totalTasks: number;
 };
 
 export default function HomeScreen() {
-  const [promotions, setPromotions] = useState<PromotionWithProgress[]>([]);
+  const [promotions, setPromotions] = useState<
+    PromotionWithProgress[]
+  >([]);
+
   const [loading, setLoading] = useState(true);
+
   const [error, setError] = useState<string | null>(null);
 
   const loadPromotions = useCallback(async () => {
@@ -42,7 +59,33 @@ export default function HomeScreen() {
       setLoading(true);
       setError(null);
 
-      const { data, error: supabaseError } = await supabase
+      /*
+       * 1. Pobieramy zalogowanego użytkownika.
+       */
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (userError) {
+        console.error('USER ERROR:', userError);
+      }
+
+      /*
+       * Jeżeli użytkownik nie jest zalogowany,
+       * nadal możemy pokazać promocje,
+       * ale nie będziemy mieli jego postępu.
+       */
+      const userId = user?.id ?? null;
+
+      /*
+       * 2. Pobieramy aktywne promocje
+       * razem z bankami.
+       */
+      const {
+        data: promotionsData,
+        error: promotionsError,
+      } = await supabase
         .from('promotions')
         .select(`
           id,
@@ -57,114 +100,246 @@ export default function HomeScreen() {
         `)
         .eq('status', 'active');
 
-      if (supabaseError) {
-        console.error('SUPABASE ERROR:', supabaseError);
-        setError('Nie udało się pobrać promocji.');
-        setLoading(false);
+      if (promotionsError) {
+        console.error(
+          'PROMOTIONS ERROR:',
+          promotionsError
+        );
+
+        setError(
+          'Nie udało się pobrać promocji.'
+        );
+
         return;
       }
 
-      const promotionsFromSupabase = (data || []) as Promotion[];
+      const loadedPromotions =
+        (promotionsData || []) as Promotion[];
 
-      const promotionsWithProgress: PromotionWithProgress[] =
-        await Promise.all(
-          promotionsFromSupabase.map(async (promotion) => {
-            const storageKey = `bankbonus_progress_${promotion.id}`;
+      
 
-            try {
-              const saved = await AsyncStorage.getItem(storageKey);
+      /*
+       * Jeżeli nie ma promocji,
+       * kończymy tutaj.
+       */
+      if (loadedPromotions.length === 0) {
+        setPromotions([]);
+        return;
+      }
 
-              console.log('DASHBOARD READING:', {
-  storageKey,
-  saved,
-});
-
-              if (!saved) {
-                return {
-                  ...promotion,
-                  progress: 0,
-                };
-              }
-
-              
-
-              
-              const parsed = JSON.parse(saved);
-
-                const completed = Array.isArray(parsed)
-                ? parsed
-              : Array.isArray(parsed.completed)
-               ? parsed.completed
-              : [];
-              const completedCount =
-                completed.filter(Boolean).length;
-
-              /*
-               * Jeżeli nie mamy jeszcze zadań w Dashboardzie,
-               * nie znamy ich całkowitej liczby.
-               *
-               * W tym momencie korzystamy z liczby zapisanych
-               * elementów checklisty.
-               */
-              const progress =
-                completed.length > 0
-                  ? Math.round(
-                      (completedCount / completed.length) * 100
-                    )
-                  : 0;
-
-              return {
-                ...promotion,
-                progress,
-              };
-            } catch (storageError) {
-              console.error(
-                'ASYNC STORAGE READ ERROR:',
-                storageError
-              );
-
-              return {
-                ...promotion,
-                progress: 0,
-              };
-            }
-          })
+      /*
+       * 3. Pobieramy wszystkie zadania
+       * należące do aktywnych promocji.
+       */
+      const promotionIds =
+        loadedPromotions.map(
+          (promotion) => promotion.id
         );
 
-      setPromotions(promotionsWithProgress);
+      const {
+        data: tasksData,
+        error: tasksError,
+      } = await supabase
+        .from('tasks')
+        .select(`
+          id,
+          promotion_id,
+          title,
+          description,
+          task_order
+        `)
+        .in(
+          'promotion_id',
+          promotionIds
+        );
+
+      if (tasksError) {
+        console.error(
+          'TASKS ERROR:',
+          tasksError
+        );
+
+        setError(
+          'Nie udało się pobrać zadań promocji.'
+        );
+
+        return;
+      }
+
+      const loadedTasks =
+        (tasksData || []) as Task[];
+
+     
+
+      /*
+       * 4. Pobieramy postęp użytkownika
+       * z Supabase.
+       *
+       * NIE używamy tutaj AsyncStorage.
+       */
+      let loadedProgress: UserTaskProgress[] =
+        [];
+
+      if (userId && loadedTasks.length > 0) {
+        const taskIds =
+          loadedTasks.map(
+            (task) => task.id
+          );
+
+        const {
+          data: progressData,
+          error: progressError,
+        } = await supabase
+          .from('user_task_progress')
+          .select(`
+            id,
+            user_id,
+            task_id,
+            completed
+          `)
+          .eq('user_id', userId)
+          .in('task_id', taskIds);
+
+        if (progressError) {
+          console.error(
+            'PROGRESS ERROR:',
+            progressError
+          );
+
+          setError(
+            'Nie udało się pobrać Twojego postępu.'
+          );
+
+          return;
+        }
+
+        loadedProgress =
+          (progressData ||
+            []) as UserTaskProgress[];
+
+       
+      }
+
+      /*
+       * 5. Łączymy promocje,
+       * zadania i postęp użytkownika.
+       */
+      const promotionsWithProgress =
+        loadedPromotions.map(
+          (promotion) => {
+            const promotionTasks =
+              loadedTasks.filter(
+                (task) =>
+                  task.promotion_id ===
+                  promotion.id
+              );
+
+            const promotionTaskIds =
+              promotionTasks.map(
+                (task) => task.id
+              );
+
+            const completedTasks =
+              loadedProgress.filter(
+                (progress) =>
+                  promotionTaskIds.includes(
+                    progress.task_id
+                  ) &&
+                  progress.completed === true
+              ).length;
+
+            const totalTasks =
+              promotionTasks.length;
+
+            const progress =
+              totalTasks > 0
+                ? Math.round(
+                    (completedTasks /
+                      totalTasks) *
+                      100
+                  )
+                : 0;
+
+            return {
+              ...promotion,
+              progress,
+              completedTasks,
+              totalTasks,
+            };
+          }
+        );
+
+      setPromotions(
+        promotionsWithProgress
+      );
     } catch (err) {
-      console.error('LOAD PROMOTIONS ERROR:', err);
-      setError('Wystąpił nieoczekiwany błąd.');
+      console.error(
+        'LOAD PROMOTIONS ERROR:',
+        err
+      );
+
+      setError(
+        'Wystąpił nieoczekiwany błąd.'
+      );
     } finally {
       setLoading(false);
     }
   }, []);
 
+  /*
+   * Pierwsze załadowanie Dashboardu.
+   */
   React.useEffect(() => {
     loadPromotions();
   }, [loadPromotions]);
 
   /*
-   * Odświeżamy Dashboard po powrocie z ekranu promocji.
-   * Dzięki temu po zaznaczeniu zadań i kliknięciu "Wróć"
-   * Dashboard pokaże aktualny postęp.
+   * Za każdym razem, gdy wracamy
+   * na Dashboard, pobieramy świeży
+   * postęp z Supabase.
    */
   useFocusEffect(
-  React.useCallback(() => {
-    loadPromotions();
-  }, [loadPromotions])
-);
+    useCallback(() => {
+      loadPromotions();
+    }, [loadPromotions])
+  );
+
   /*
    * Suma wszystkich możliwych bonusów.
    */
   const totalBonus = promotions.reduce(
-    (sum, promotion) => sum + promotion.bonus_amount,
+    (sum, promotion) =>
+      sum + promotion.bonus_amount,
     0
   );
 
+  /*
+   * Łączna liczba ukończonych zadań.
+   */
+  const totalCompletedTasks =
+    promotions.reduce(
+      (sum, promotion) =>
+        sum + promotion.completedTasks,
+      0
+    );
+
+  /*
+   * Łączna liczba wszystkich zadań.
+   */
+  const totalTasks = promotions.reduce(
+    (sum, promotion) =>
+      sum + promotion.totalTasks,
+    0
+  );
+
+  /*
+   * Loading.
+   */
   if (loading) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
+      <SafeAreaView
+        style={styles.loadingContainer}
+      >
         <ActivityIndicator size="large" />
 
         <Text style={styles.loadingText}>
@@ -174,9 +349,14 @@ export default function HomeScreen() {
     );
   }
 
+  /*
+   * Error.
+   */
   if (error) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
+      <SafeAreaView
+        style={styles.loadingContainer}
+      >
         <Text style={styles.errorText}>
           {error}
         </Text>
@@ -185,7 +365,9 @@ export default function HomeScreen() {
           style={styles.retryButton}
           onPress={loadPromotions}
         >
-          <Text style={styles.retryButtonText}>
+          <Text
+            style={styles.retryButtonText}
+          >
             Spróbuj ponownie
           </Text>
         </TouchableOpacity>
@@ -194,104 +376,195 @@ export default function HomeScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+    <SafeAreaView
+      style={styles.container}
+    >
+      <ScrollView
+        contentContainerStyle={
+          styles.content
+        }
+      >
+        {/* HEADER */}
 
         <Text style={styles.logo}>
           BankBonus
         </Text>
 
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>
+        {/* PODSUMOWANIE */}
+
+        <View
+          style={styles.summaryCard}
+        >
+          <Text
+            style={styles.summaryLabel}
+          >
             Twoje możliwe bonusy
           </Text>
 
-          <Text style={styles.summaryAmount}>
+          <Text
+            style={styles.summaryAmount}
+          >
             {totalBonus} zł
           </Text>
 
-          <Text style={styles.summaryDescription}>
+          <Text
+            style={
+              styles.summaryDescription
+            }
+          >
             Potencjalnie do zdobycia
           </Text>
+
+          {totalTasks > 0 && (
+            <Text
+              style={
+                styles.summaryProgress
+              }
+            >
+              Wykonane zadania:{' '}
+              {totalCompletedTasks} /{' '}
+              {totalTasks}
+            </Text>
+          )}
         </View>
 
-        <Text style={styles.sectionTitle}>
+        {/* PROMOCJE */}
+
+        <Text
+          style={styles.sectionTitle}
+        >
           Aktywne promocje
         </Text>
 
-        {promotions.map((promotion) => (
-          <View
-            key={promotion.id}
-            style={styles.promotionCard}
-          >
-            <Text style={styles.bankName}>
-              {promotion.banks.name}
-            </Text>
+        {promotions.map(
+          (promotion) => (
+            <View
+              key={promotion.id}
+              style={
+                styles.promotionCard
+              }
+            >
+              {/* BANK */}
 
-            <Text style={styles.promotionTitle}>
-              {promotion.title}
-            </Text>
-
-            <Text style={styles.bonus}>
-              +{promotion.bonus_amount} zł
-            </Text>
-
-            <View style={styles.progressBackground}>
-              <View
-                style={[
-                  styles.progress,
-                  {
-                    width: `${promotion.progress}%`,
-                  },
-                ]}
-              />
-            </View>
-
-            <View style={styles.progressRow}>
-              <Text style={styles.progressText}>
-                Postęp: {promotion.progress}%
+              <Text
+                style={styles.bankName}
+              >
+                {promotion.banks?.name ??
+                  'Bank'}
               </Text>
 
-              <TouchableOpacity
-                activeOpacity={0.7}
-                onPress={() =>
-                  router.push({
-                    pathname: '/promotion',
-                    params: {
-                      id: promotion.id,
-                    },
-                  })
+              {/* TYTUŁ */}
+
+              <Text
+                style={
+                  styles.promotionTitle
                 }
               >
-                <Text style={styles.details}>
-                  Zobacz →
+                {promotion.title}
+              </Text>
+
+              {/* BONUS */}
+
+              <Text
+                style={styles.bonus}
+              >
+                +{promotion.bonus_amount}{' '}
+                zł
+              </Text>
+
+              {/* PROGRESS BAR */}
+
+              <View
+                style={
+                  styles.progressBackground
+                }
+              >
+                <View
+                  style={[
+                    styles.progress,
+                    {
+                      width: `${promotion.progress}%`,
+                    },
+                  ]}
+                />
+              </View>
+
+              {/* PROGRESS */}
+
+              <View
+                style={styles.progressRow}
+              >
+                <Text
+                  style={
+                    styles.progressText
+                  }
+                >
+                  {promotion.completedTasks}{' '}
+                  z{' '}
+                  {promotion.totalTasks}{' '}
+                  zadań •{' '}
+                  {promotion.progress}%
                 </Text>
-              </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() =>
+                    router.push({
+                      pathname:
+                        '/promotion',
+                      params: {
+                        id: promotion.id,
+                      },
+                    })
+                  }
+                >
+                  <Text
+                    style={
+                      styles.details
+                    }
+                  >
+                    Zobacz →
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
-        ))}
+          )
+        )}
+
+        {/* BRAK PROMOCJI */}
 
         {promotions.length === 0 && (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>
+          <View
+            style={styles.emptyCard}
+          >
+            <Text
+              style={styles.emptyTitle}
+            >
               Brak aktywnych promocji
             </Text>
 
-            <Text style={styles.emptyText}>
-              Aktualnie nie znaleziono żadnych aktywnych promocji.
+            <Text
+              style={styles.emptyText}
+            >
+              Aktualnie nie znaleziono
+              żadnych aktywnych
+              promocji.
             </Text>
           </View>
         )}
+
+        {/* WSZYSTKIE PROMOCJE */}
 
         <TouchableOpacity
           style={styles.allButton}
           activeOpacity={0.7}
         >
-          <Text style={styles.allButtonText}>
+          <Text
+            style={styles.allButtonText}
+          >
             Zobacz wszystkie promocje
           </Text>
         </TouchableOpacity>
-
       </ScrollView>
     </SafeAreaView>
   );
@@ -337,6 +610,12 @@ const styles = StyleSheet.create({
   summaryDescription: {
     color: '#9CA3AF',
     marginTop: 6,
+  },
+
+  summaryProgress: {
+    color: '#D1D5DB',
+    fontSize: 13,
+    marginTop: 14,
   },
 
   sectionTitle: {
@@ -396,6 +675,8 @@ const styles = StyleSheet.create({
   progressText: {
     fontSize: 13,
     color: '#6B7280',
+    flex: 1,
+    marginRight: 10,
   },
 
   details: {
