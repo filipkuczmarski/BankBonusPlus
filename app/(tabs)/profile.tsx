@@ -1,13 +1,14 @@
 
+import { sendTestNotification } from '@/lib/notifications';
 import { supabase } from '@/lib/supabase';
 import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -83,6 +84,16 @@ export default function ProfileScreen() {
             {email ?? 'Brak adresu email'}
           </Text>
         </View>
+
+        <TouchableOpacity
+          onPress={sendTestNotification}
+          style={styles.notificationButton}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.notificationButtonText}>
+            🔔 Wyślij testowe powiadomienie
+          </Text>
+        </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.logoutButton}
@@ -164,6 +175,20 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '600',
     color: '#111827',
+  },
+
+    notificationButton: {
+    backgroundColor: '#2563EB',
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+    marginTop: 20,
+  },
+
+  notificationButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
   },
 
   logoutButton: {

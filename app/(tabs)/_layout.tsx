@@ -1,4 +1,3 @@
-
 import { Tabs } from 'expo-router';
 import React from 'react';
 
@@ -34,13 +33,13 @@ export default function TabLayout() {
       />
 
       <Tabs.Screen
-        name="explore"
+        name="my-promotions"
         options={{
-          title: 'Explore',
+          title: 'Moje promocje',
           tabBarIcon: ({ color }) => (
             <IconSymbol
               size={28}
-              name="paperplane.fill"
+              name="list.bullet"
               color={color}
             />
           ),
@@ -58,6 +57,13 @@ export default function TabLayout() {
               color={color}
             />
           ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="explore"
+        options={{
+          href: null,
         }}
       />
     </Tabs>

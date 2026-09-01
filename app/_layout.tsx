@@ -10,15 +10,8 @@ import 'react-native-reanimated';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { supabase } from '@/lib/supabase';
 
-import React, {
-  useEffect,
-  useState,
-} from 'react';
-
-import {
-  ActivityIndicator,
-  View,
-} from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, View } from 'react-native';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -32,9 +25,6 @@ export default function RootLayout() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    /*
-     * Sprawdzamy, czy użytkownik ma już aktywną sesję.
-     */
     const loadSession = async () => {
       const {
         data: { session },
@@ -46,10 +36,6 @@ export default function RootLayout() {
 
     loadSession();
 
-    /*
-     * Nasłuchujemy zmian sesji:
-     * login / logout / odświeżenie tokenu.
-     */
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(
@@ -68,33 +54,18 @@ export default function RootLayout() {
       return;
     }
 
-    const inAuthScreen =
-      segments[0] === 'login';
+    const inAuthScreen = segments[0] === 'login';
 
-    const inTabs =
-      segments[0] === '(tabs)';
-
-    /*
-     * Brak sesji → użytkownik musi się zalogować.
-     */
     if (!session && !inAuthScreen) {
       router.replace('/login');
       return;
     }
 
-    /*
-     * Jest sesja → użytkownik nie powinien
-     * znajdować się na ekranie logowania.
-     */
     if (session && inAuthScreen) {
       router.replace('/(tabs)');
     }
   }, [session, loading, segments]);
 
-  /*
-   * Podczas sprawdzania sesji pokazujemy
-   * prosty ekran ładowania.
-   */
   if (loading) {
     return (
       <View
@@ -121,25 +92,18 @@ export default function RootLayout() {
       <Stack>
         <Stack.Screen
           name="login"
-          options={{
-            headerShown: false,
-          }}
+          options={{ headerShown: false }}
         />
 
         <Stack.Screen
           name="(tabs)"
-          options={{
-            headerShown: false,
-          }}
+          options={{ headerShown: false }}
         />
 
         <Stack.Screen
           name="promotion"
-          options={{
-            headerShown: false,
-          }}
+          options={{ headerShown: false }}
         />
-      
 
         <Stack.Screen
           name="modal"

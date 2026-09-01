@@ -1,9 +1,14 @@
-
+import {
+  cancelTaskNotifications,
+  schedulePromotionTaskNotifications,
+  scheduleTaskNotifications,
+} from '@/lib/notifications';
 import { supabase } from '@/lib/supabase';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   ScrollView,
   StyleSheet,
@@ -12,6 +17,17 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+
+type PromotionCategory =
+  | 'personal_account'
+  | 'business_account'
+  | 'card'
+  | 'savings';
+
+type PromotionDifficulty =
+  | 'easy'
+  | 'medium'
+  | 'hard';
 
 type Promotion = {
   id: string;
@@ -23,6 +39,12 @@ type Promotion = {
   terms_url: string | null;
   application_url: string | null;
   status: string;
+
+  category: PromotionCategory | null;
+  difficulty: PromotionDifficulty | null;
+  account_fee: number | null;
+  card_fee: number | null;
+
   banks: {
     name: string;
     logo_url: string | null;
@@ -35,381 +57,967 @@ type Task = {
   title: string;
   description: string | null;
   task_order: number;
+  due_date: string | null;
 };
 
-type UserTaskProgress = {
-  id: string;
-  user_id: string;
-  task_id: string;
-  completed: boolean;
+type ProgressMap = Record<string, boolean>;
+
+const getCategoryLabel = (
+  category: PromotionCategory | null
+) => {
+  switch (category) {
+    case 'personal_account':
+      return 'Konto osobiste';
+
+    case 'business_account':
+      return 'Konto firmowe';
+
+    case 'card':
+      return 'Karta';
+
+    case 'savings':
+      return 'Oszczędności';
+
+    default:
+      return null;
+  }
+};
+
+const getDifficultyConfig = (
+  difficulty: PromotionDifficulty | null
+) => {
+  switch (difficulty) {
+    case 'easy':
+      return {
+        label: 'Łatwa',
+        backgroundColor: '#ECFDF5',
+        color: '#15803D',
+      };
+
+    case 'medium':
+      return {
+        label: 'Średnia',
+        backgroundColor: '#FFFBEB',
+        color: '#B45309',
+      };
+
+    case 'hard':
+      return {
+        label: 'Trudna',
+        backgroundColor: '#FEF2F2',
+        color: '#DC2626',
+      };
+
+    default:
+      return null;
+  }
+};
+
+const formatFee = (
+  fee: number | null
+) => {
+  if (fee === null) {
+    return 'Brak danych';
+  }
+
+  if (fee === 0) {
+    return '0 zł';
+  }
+
+  return `${fee} zł / mies.`;
+};
+
+const formatDate = (
+  date: string | null
+) => {
+  if (!date) {
+    return 'Brak danych';
+  }
+
+  return new Date(
+    `${date}T12:00:00`
+  ).toLocaleDateString('pl-PL');
+};
+
+const getDaysRemaining = (
+  endDate: string | null
+) => {
+  if (!endDate) {
+    return null;
+  }
+
+  const today = new Date();
+
+  today.setHours(
+    0,
+    0,
+    0,
+    0
+  );
+
+  const end = new Date(
+    `${endDate}T00:00:00`
+  );
+
+  const difference =
+    end.getTime() -
+    today.getTime();
+
+  return Math.ceil(
+    difference /
+      (1000 * 60 * 60 * 24)
+  );
+};
+
+const getDaysRemainingLabel = (
+  days: number | null
+) => {
+  if (days === null) {
+    return null;
+  }
+
+  if (days < 0) {
+    return 'Promocja zakończona';
+  }
+
+  if (days === 0) {
+    return '🔥 Ostatni dzień';
+  }
+
+  if (days === 1) {
+    return '🔥 Został 1 dzień';
+  }
+
+  if (days <= 3) {
+    return `🔥 Zostały ${days} dni`;
+  }
+
+  if (days <= 7) {
+    return `Kończy się za ${days} dni`;
+  }
+
+  return `Zostało ${days} dni`;
+};
+
+const getTaskDeadlineLabel = (
+  dueDate: string | null
+) => {
+  if (!dueDate) {
+    return null;
+  }
+
+  const today = new Date();
+
+  today.setHours(
+    0,
+    0,
+    0,
+    0
+  );
+
+  const due = new Date(
+    `${dueDate}T00:00:00`
+  );
+
+  const difference =
+    due.getTime() -
+    today.getTime();
+
+  const days = Math.ceil(
+    difference /
+      (1000 * 60 * 60 * 24)
+  );
+
+  if (days < 0) {
+    return {
+      label: 'Termin minął',
+      backgroundColor: '#F3F4F6',
+      color: '#6B7280',
+    };
+  }
+
+  if (days === 0) {
+    return {
+      label: 'Dzisiaj',
+      backgroundColor: '#FEF2F2',
+      color: '#DC2626',
+    };
+  }
+
+  if (days === 1) {
+    return {
+      label: 'Jutro',
+      backgroundColor: '#FFF7ED',
+      color: '#C2410C',
+    };
+  }
+
+  if (days <= 3) {
+    return {
+      label: `Za ${days} dni`,
+      backgroundColor: '#FFF7ED',
+      color: '#C2410C',
+    };
+  }
+
+  return {
+    label: formatDate(dueDate),
+    backgroundColor: '#EFF6FF',
+    color: '#2563EB',
+  };
 };
 
 export default function PromotionScreen() {
-  const { id } = useLocalSearchParams();
+  const params =
+    useLocalSearchParams<{
+      id?: string;
+    }>();
 
-  const promotionId = Array.isArray(id) ? id[0] : id;
+  const promotionId =
+    Array.isArray(params.id)
+      ? params.id[0]
+      : params.id;
 
-  const [promotion, setPromotion] =
-    useState<Promotion | null>(null);
+  const [
+    promotion,
+    setPromotion,
+  ] =
+    useState<Promotion | null>(
+      null
+    );
 
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [
+    tasks,
+    setTasks,
+  ] =
+    useState<Task[]>([]);
 
-  const [completed, setCompleted] =
-    useState<boolean[]>([]);
+  const [
+    progress,
+    setProgress,
+  ] =
+    useState<ProgressMap>(
+      {}
+    );
 
-  const [loading, setLoading] = useState(true);
+  const [
+    loading,
+    setLoading,
+  ] =
+    useState(true);
 
-  const [error, setError] =
-    useState<string | null>(null);
+  const [
+    error,
+    setError,
+  ] =
+    useState<string | null>(
+      null
+    );
 
-  const [savingTask, setSavingTask] =
-    useState<string | null>(null);
+  const [
+    isInMyPromotions,
+    setIsInMyPromotions,
+  ] =
+    useState(false);
 
-  /*
-   * Pobieramy promocję, zadania
-   * oraz postęp użytkownika.
-   */
+  const [
+    addingPromotion,
+    setAddingPromotion,
+  ] =
+    useState(false);
+
+  const [
+    savingTaskId,
+    setSavingTaskId,
+  ] =
+    useState<string | null>(
+      null
+    );
+
   useEffect(() => {
-    const loadPromotion = async () => {
-      try {
-        if (!promotionId) {
-          setError('Nie znaleziono promocji.');
-          setLoading(false);
-          return;
-        }
+    if (!promotionId) {
+      setError(
+        'Nie znaleziono promocji.'
+      );
 
-        /*
-         * 1. Aktualny użytkownik
-         */
-        const {
-          data: { user },
-          error: userError,
-        } = await supabase.auth.getUser();
+      setLoading(false);
 
-        if (userError || !user) {
-          console.error('USER ERROR:', userError);
-
-          setError(
-            'Nie znaleziono zalogowanego użytkownika.'
-          );
-
-          setLoading(false);
-          return;
-        }
-
-        /*
-         * 2. Promocja
-         */
-        const {
-          data: promotionData,
-          error: promotionError,
-        } = await supabase
-          .from('promotions')
-          .select(`
-            id,
-            title,
-            bonus_amount,
-            description,
-            start_date,
-            end_date,
-            terms_url,
-            application_url,
-            status,
-            banks (
-              name,
-              logo_url
-            )
-          `)
-          .eq('id', promotionId)
-          .single();
-
-        if (promotionError) {
-          console.error(
-            'PROMOTION ERROR:',
-            promotionError
-          );
-
-          setError(
-            'Nie udało się pobrać promocji.'
-          );
-
-          setLoading(false);
-          return;
-        }
-
-        /*
-         * 3. Zadania
-         */
-        const {
-          data: tasksData,
-          error: tasksError,
-        } = await supabase
-          .from('tasks')
-          .select(`
-            id,
-            promotion_id,
-            title,
-            description,
-            task_order
-          `)
-          .eq('promotion_id', promotionId)
-          .order('task_order', {
-            ascending: true,
-          });
-
-        if (tasksError) {
-          console.error(
-            'TASKS ERROR:',
-            tasksError
-          );
-
-          setError(
-            'Nie udało się pobrać zadań.'
-          );
-
-          setLoading(false);
-          return;
-        }
-
-        const loadedTasks =
-          (tasksData || []) as Task[];
-
-        /*
-         * 4. Postęp użytkownika
-         */
-        let loadedProgress: UserTaskProgress[] = [];
-
-        if (loadedTasks.length > 0) {
-          const taskIds = loadedTasks.map(
-            (task) => task.id
-          );
-
-          const {
-            data: progressData,
-            error: progressError,
-          } = await supabase
-            .from('user_task_progress')
-            .select(`
-              id,
-              user_id,
-              task_id,
-              completed
-            `)
-            .eq('user_id', user.id)
-            .in('task_id', taskIds);
-
-          if (progressError) {
-            console.error(
-              'PROGRESS ERROR:',
-              progressError
-            );
-
-            setError(
-              'Nie udało się pobrać Twojego postępu.'
-            );
-
-            setLoading(false);
-            return;
-          }
-
-          loadedProgress =
-            (progressData ||
-              []) as UserTaskProgress[];
-        }
-
-        /*
-         * 5. Zamieniamy progress na boolean[]
-         */
-        const initialCompleted =
-          loadedTasks.map((task) => {
-            const progressRecord =
-              loadedProgress.find(
-                (item) =>
-                  item.task_id === task.id
-              );
-
-            return (
-              progressRecord?.completed ??
-              false
-            );
-          });
-
-        setPromotion(
-          promotionData as Promotion
-        );
-
-        setTasks(loadedTasks);
-
-        setCompleted(initialCompleted);
-
-        setLoading(false);
-      } catch (loadError) {
-        console.error(
-          'LOAD PROMOTION ERROR:',
-          loadError
-        );
-
-        setError(
-          'Wystąpił nieoczekiwany błąd.'
-        );
-
-        setLoading(false);
-      }
-    };
+      return;
+    }
 
     loadPromotion();
   }, [promotionId]);
 
-  /*
-   * Zaznaczanie / odznaczanie zadania.
-   */
-  const toggleTask = async (index: number) => {
-    const task = tasks[index];
-
-    if (!task) {
-      return;
-    }
-
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      console.error('USER ERROR:', userError);
-      return;
-    }
-
-    const newValue = !completed[index];
-
-    setSavingTask(task.id);
-
-    /*
-     * Natychmiastowa aktualizacja UI.
-     */
-    setCompleted((current) =>
-      current.map((value, i) =>
-        i === index ? newValue : value
-      )
-    );
-
-    try {
-      /*
-       * Sprawdzamy istniejący rekord.
-       */
-      const {
-        data: existingProgress,
-        error: existingError,
-      } = await supabase
-        .from('user_task_progress')
-        .select('id')
-        .eq('user_id', user.id)
-        .eq('task_id', task.id)
-        .maybeSingle();
-
-      if (existingError) {
-        console.error(
-          'CHECK PROGRESS ERROR:',
-          existingError
-        );
-
-        setCompleted((current) =>
-          current.map((value, i) =>
-            i === index ? !newValue : value
-          )
-        );
-
+  const loadPromotion =
+    async () => {
+      if (!promotionId) {
         return;
       }
 
-      /*
-       * UPDATE
-       */
-      if (existingProgress) {
+      try {
+        setLoading(true);
+        setError(null);
+
         const {
-          error: updateError,
-        } = await supabase
-          .from('user_task_progress')
+          data: promotionData,
+          error:
+            promotionError,
+        } =
+          await supabase
+            .from(
+              'promotions'
+            )
+            .select(
+              `
+              id,
+              title,
+              bonus_amount,
+              description,
+              start_date,
+              end_date,
+              terms_url,
+              application_url,
+              status,
+              category,
+              difficulty,
+              account_fee,
+              card_fee,
+              banks (
+                name,
+                logo_url
+              )
+            `
+            )
+            .eq(
+              'id',
+              promotionId
+            )
+            .single();
+
+        if (
+          promotionError
+        ) {
+          throw promotionError;
+        }
+
+        setPromotion(
+          promotionData as unknown as Promotion
+        );
+
+        const {
+          data: tasksData,
+          error:
+            tasksError,
+        } =
+          await supabase
+            .from('tasks')
+            .select(
+              `
+              id,
+              promotion_id,
+              title,
+              description,
+              task_order,
+              due_date
+            `
+            )
+            .eq(
+              'promotion_id',
+              promotionId
+            )
+            .order(
+              'task_order',
+              {
+                ascending:
+                  true,
+              }
+            );
+
+        if (tasksError) {
+          throw tasksError;
+        }
+
+        const loadedTasks =
+          (tasksData ??
+            []) as Task[];
+
+        setTasks(
+          loadedTasks
+        );
+
+        const {
+          data: {
+            user,
+          },
+        } =
+          await supabase.auth.getUser();
+
+        if (!user) {
+          setProgress(
+            {}
+          );
+
+          setIsInMyPromotions(
+            false
+          );
+
+          return;
+        }
+
+        const {
+          data:
+            userPromotion,
+          error:
+            userPromotionError,
+        } =
+          await supabase
+            .from(
+              'user_promotions'
+            )
+            .select(
+              'id, status'
+            )
+            .eq(
+              'user_id',
+              user.id
+            )
+            .eq(
+              'promotion_id',
+              promotionId
+            )
+            .maybeSingle();
+
+        if (
+          userPromotionError
+        ) {
+          throw userPromotionError;
+        }
+
+        setIsInMyPromotions(
+          Boolean(
+            userPromotion
+          )
+        );
+
+        if (
+          loadedTasks.length ===
+          0
+        ) {
+          return;
+        }
+
+        const taskIds =
+          loadedTasks.map(
+            (task) =>
+              task.id
+          );
+
+        const {
+          data:
+            progressData,
+          error:
+            progressError,
+        } =
+          await supabase
+            .from(
+              'user_task_progress'
+            )
+            .select(
+              'task_id, completed'
+            )
+            .eq(
+              'user_id',
+              user.id
+            )
+            .in(
+              'task_id',
+              taskIds
+            );
+
+        if (
+          progressError
+        ) {
+          throw progressError;
+        }
+
+        const progressMap:
+          ProgressMap =
+          {};
+
+        for (
+          const row of
+            progressData ??
+          []
+        ) {
+          progressMap[
+            row.task_id
+          ] =
+            row.completed;
+        }
+
+        setProgress(
+          progressMap
+        );
+      } catch (
+        err
+      ) {
+        console.error(
+          'LOAD PROMOTION ERROR:',
+          err
+        );
+
+        setError(
+          'Nie udało się załadować promocji.'
+        );
+      } finally {
+        setLoading(
+          false
+        );
+      }
+    };
+
+  const updatePromotionStatus =
+    async (
+      userId: string,
+      nextProgress: ProgressMap
+    ) => {
+      if (!promotionId) {
+        return;
+      }
+
+      if (
+        tasks.length ===
+        0
+      ) {
+        return;
+      }
+
+      const allCompleted =
+        tasks.every(
+          (task) =>
+            nextProgress[
+              task.id
+            ] === true
+        );
+
+      const {
+        error:
+          statusError,
+      } =
+        await supabase
+          .from(
+            'user_promotions'
+          )
           .update({
-            completed: newValue,
-            updated_at:
-              new Date().toISOString(),
+            status:
+              allCompleted
+                ? 'completed'
+                : 'active',
+
+            completed_at:
+              allCompleted
+                ? new Date().toISOString()
+                : null,
           })
           .eq(
-            'id',
-            existingProgress.id
+            'user_id',
+            userId
+          )
+          .eq(
+            'promotion_id',
+            promotionId
           );
 
-        if (updateError) {
-          console.error(
-            'UPDATE PROGRESS ERROR:',
-            updateError
-          );
-
-          setCompleted((current) =>
-            current.map((value, i) =>
-              i === index
-                ? !newValue
-                : value
-            )
-          );
-
-          return;
-        }
-      } else {
-        /*
-         * INSERT
-         */
-        const {
-          error: insertError,
-        } = await supabase
-          .from('user_task_progress')
-          .insert({
-            user_id: user.id,
-            task_id: task.id,
-            completed: newValue,
-          });
-
-        if (insertError) {
-          console.error(
-            'INSERT PROGRESS ERROR:',
-            insertError
-          );
-
-          setCompleted((current) =>
-            current.map((value, i) =>
-              i === index
-                ? !newValue
-                : value
-            )
-          );
-
-          return;
-        }
+      if (statusError) {
+        throw statusError;
       }
-    } catch (saveError) {
-      console.error(
-        'SAVE PROGRESS ERROR:',
-        saveError
-      );
+    };
 
-      setCompleted((current) =>
-        current.map((value, i) =>
-          i === index ? !newValue : value
-        )
-      );
-    } finally {
-      setSavingTask(null);
-    }
-  };
+  const addToMyPromotions =
+    async () => {
+      if (
+        !promotion ||
+        !promotionId
+      ) {
+        return;
+      }
 
-  /*
-   * Liczymy postęp.
-   */
+      try {
+        setAddingPromotion(
+          true
+        );
+
+        const {
+          data: {
+            user,
+          },
+        } =
+          await supabase.auth.getUser();
+
+        if (!user) {
+          Alert.alert(
+            'Zaloguj się',
+            'Musisz być zalogowany, aby dodać promocję.'
+          );
+
+          return;
+        }
+
+        const {
+          error:
+            insertError,
+        } =
+          await supabase
+            .from(
+              'user_promotions'
+            )
+            .upsert(
+              {
+                user_id:
+                  user.id,
+                promotion_id:
+                  promotionId,
+                status:
+                  'active',
+              },
+              {
+                onConflict:
+                  'user_id,promotion_id',
+              }
+            );
+
+        if (
+          insertError
+        ) {
+          throw insertError;
+        }
+
+        setIsInMyPromotions(
+          true
+        );
+
+        /*
+         * POWIADOMIENIA
+         *
+         * Po dodaniu promocji
+         * planujemy przypomnienia
+         * dla niewykonanych
+         * zadań posiadających
+         * due_date.
+         */
+        const incompleteTasks =
+          tasks.filter(
+            (task) =>
+              progress[
+                task.id
+              ] !== true
+          );
+
+        await schedulePromotionTaskNotifications(
+          promotion.title,
+          incompleteTasks
+        );
+
+        Alert.alert(
+          'Promocja dodana ✓',
+          'Dodaliśmy promocję do Twoich promocji i zaplanowaliśmy przypomnienia o terminach.'
+        );
+      } catch (
+        err
+      ) {
+        console.error(
+          'ADD PROMOTION ERROR:',
+          err
+        );
+
+        Alert.alert(
+          'Błąd',
+          'Nie udało się dodać promocji.'
+        );
+      } finally {
+        setAddingPromotion(
+          false
+        );
+      }
+    };
+
+  const toggleTask =
+    async (
+      task: Task
+    ) => {
+      if (
+        !promotion
+      ) {
+        return;
+      }
+
+      try {
+        setSavingTaskId(
+          task.id
+        );
+
+        const {
+          data: {
+            user,
+          },
+        } =
+          await supabase.auth.getUser();
+
+        if (!user) {
+          Alert.alert(
+            'Zaloguj się',
+            'Musisz być zalogowany, aby zapisywać postęp.'
+          );
+
+          return;
+        }
+
+        /*
+         * Jeśli użytkownik
+         * zaczyna odhaczać zadanie,
+         * a promocja nie była jeszcze
+         * dodana do jego promocji,
+         * dodajemy ją automatycznie.
+         */
+        if (
+          !isInMyPromotions
+        ) {
+          const {
+            error:
+              promotionInsertError,
+          } =
+            await supabase
+              .from(
+                'user_promotions'
+              )
+              .upsert(
+                {
+                  user_id:
+                    user.id,
+                  promotion_id:
+                    promotion.id,
+                  status:
+                    'active',
+                },
+                {
+                  onConflict:
+                    'user_id,promotion_id',
+                }
+              );
+
+          if (
+            promotionInsertError
+          ) {
+            throw promotionInsertError;
+          }
+
+          setIsInMyPromotions(
+            true
+          );
+        }
+
+        const currentValue =
+          progress[
+            task.id
+          ] === true;
+
+        const newValue =
+          !currentValue;
+
+        const nextProgress =
+          {
+            ...progress,
+            [task.id]:
+              newValue,
+          };
+
+        /*
+         * Optymistycznie
+         * aktualizujemy UI.
+         */
+        setProgress(
+          nextProgress
+        );
+
+        const {
+          data:
+            existingProgress,
+          error:
+            existingError,
+        } =
+          await supabase
+            .from(
+              'user_task_progress'
+            )
+            .select(
+              'id'
+            )
+            .eq(
+              'user_id',
+              user.id
+            )
+            .eq(
+              'task_id',
+              task.id
+            )
+            .maybeSingle();
+
+        if (
+          existingError
+        ) {
+          throw existingError;
+        }
+
+        if (
+          existingProgress
+        ) {
+          const {
+            error:
+              updateError,
+          } =
+            await supabase
+              .from(
+                'user_task_progress'
+              )
+              .update({
+                completed:
+                  newValue,
+                updated_at:
+                  new Date().toISOString(),
+              })
+              .eq(
+                'id',
+                existingProgress.id
+              );
+
+          if (
+            updateError
+          ) {
+            throw updateError;
+          }
+        } else {
+          const {
+            error:
+              insertError,
+          } =
+            await supabase
+              .from(
+                'user_task_progress'
+              )
+              .insert({
+                user_id:
+                  user.id,
+                task_id:
+                  task.id,
+                completed:
+                  newValue,
+                updated_at:
+                  new Date().toISOString(),
+              });
+
+          if (
+            insertError
+          ) {
+            throw insertError;
+          }
+        }
+
+        /*
+         * -------------------------
+         * OBSŁUGA POWIADOMIEŃ
+         * -------------------------
+         */
+
+        if (newValue) {
+          /*
+           * Zadanie wykonane.
+           *
+           * Usuwamy wszystkie
+           * przyszłe przypomnienia
+           * dla tego zadania.
+           */
+          await cancelTaskNotifications(
+            task.id
+          );
+        } else {
+          /*
+           * Zadanie zostało ponownie
+           * oznaczone jako niewykonane.
+           *
+           * Jeśli ma deadline,
+           * planujemy przypomnienia
+           * ponownie.
+           */
+          await scheduleTaskNotifications(
+            {
+              taskId:
+                task.id,
+
+              taskTitle:
+                task.title,
+
+              promotionTitle:
+                promotion.title,
+
+              dueDate:
+                task.due_date,
+            }
+          );
+        }
+
+        await updatePromotionStatus(
+          user.id,
+          nextProgress
+        );
+      } catch (
+        err
+      ) {
+        console.error(
+          'TOGGLE TASK ERROR:',
+          err
+        );
+
+        /*
+         * Jeśli zapis się nie udał,
+         * przywracamy poprzedni stan.
+         */
+        setProgress(
+          (previous) => ({
+            ...previous,
+            [task.id]:
+              !previous[
+                task.id
+              ],
+          })
+        );
+
+        Alert.alert(
+          'Błąd',
+          'Nie udało się zapisać postępu.'
+        );
+      } finally {
+        setSavingTaskId(
+          null
+        );
+      }
+    };
+
   const completedCount =
-    completed.filter(Boolean).length;
+    useMemo(
+      () =>
+        tasks.filter(
+          (task) =>
+            progress[
+              task.id
+            ] === true
+        ).length,
+      [
+        tasks,
+        progress,
+      ]
+    );
 
-  const progress =
+  const progressPercent =
     tasks.length > 0
       ? Math.round(
           (completedCount /
@@ -418,78 +1026,33 @@ export default function PromotionScreen() {
         )
       : 0;
 
-  /*
-   * Liczymy ile dni zostało do końca.
-   */
-  const getDaysRemaining = (
-    endDate: string | null
-  ) => {
-    if (!endDate) {
-      return null;
-    }
-
-    const end = new Date(endDate);
-
-    const now = new Date();
-
-    const difference =
-      end.getTime() -
-      now.getTime();
-
-    const days = Math.ceil(
-      difference /
-        (1000 * 60 * 60 * 24)
-    );
-
-    return days;
-  };
-
-  /*
-   * Format daty.
-   */
-  const formatDate = (
-    date: string | null
-  ) => {
-    if (!date) {
-      return '—';
-    }
-
-    const parsedDate =
-      new Date(date);
-
-    return parsedDate.toLocaleDateString(
-      'pl-PL'
-    );
-  };
-
   const daysRemaining =
     getDaysRemaining(
-      promotion?.end_date ?? null
+      promotion?.end_date ??
+        null
     );
 
-  /*
-   * Otwieranie linku.
-   */
-  const openUrl = async (
-    url: string | null
-  ) => {
-    if (!url) {
-      return;
-    }
+  const daysRemainingLabel =
+    getDaysRemainingLabel(
+      daysRemaining
+    );
 
-    try {
-      await Linking.openURL(url);
-    } catch (error) {
-      console.error(
-        'OPEN URL ERROR:',
-        error
-      );
-    }
-  };
+  const promotionExpired =
+    daysRemaining !== null &&
+    daysRemaining < 0;
 
-  /*
-   * Loading
-   */
+  const difficultyConfig =
+    getDifficultyConfig(
+      promotion?.difficulty ??
+        null
+    );
+
+  const categoryLabel =
+    getCategoryLabel(
+      promotion?.category ??
+        null
+    );
+
   if (loading) {
     return (
       <SafeAreaView
@@ -502,7 +1065,9 @@ export default function PromotionScreen() {
         />
 
         <Text
-          style={styles.loadingText}
+          style={
+            styles.loadingText
+          }
         >
           Ładowanie promocji...
         </Text>
@@ -510,10 +1075,10 @@ export default function PromotionScreen() {
     );
   }
 
-  /*
-   * Error
-   */
-  if (error || !promotion) {
+  if (
+    error ||
+    !promotion
+  ) {
     return (
       <SafeAreaView
         style={
@@ -521,109 +1086,456 @@ export default function PromotionScreen() {
         }
       >
         <Text
-          style={styles.errorText}
+          style={
+            styles.errorTitle
+          }
         >
-          {error ||
-            'Nie znaleziono promocji.'}
+          Nie udało się otworzyć promocji
+        </Text>
+
+        <Text
+          style={
+            styles.errorText
+          }
+        >
+          {error ??
+            'Promocja nie istnieje.'}
         </Text>
 
         <TouchableOpacity
-          style={styles.retryButton}
-          onPress={() => router.back()}
+          style={
+            styles.backErrorButton
+          }
+          onPress={() =>
+            router.back()
+          }
         >
           <Text
             style={
-              styles.retryButtonText
+              styles.backErrorText
             }
           >
-            Wróć
+            ← Wróć
           </Text>
         </TouchableOpacity>
       </SafeAreaView>
     );
   }
 
-  /*
-   * Główny ekran.
-   */
   return (
     <SafeAreaView
-      style={styles.container}
+      style={
+        styles.container
+      }
     >
       <ScrollView
         contentContainerStyle={
-          styles.content
+          styles.scrollContent
+        }
+        showsVerticalScrollIndicator={
+          false
         }
       >
-        {/* POWRÓT */}
-
         <TouchableOpacity
-          onPress={() => router.back()}
-          style={styles.backButton}
-          activeOpacity={0.7}
+          onPress={() =>
+            router.back()
+          }
+          style={
+            styles.backButton
+          }
         >
           <Text
-            style={styles.backText}
+            style={
+              styles.backText
+            }
           >
             ← Wróć
           </Text>
         </TouchableOpacity>
 
-        {/* BANK */}
-
-        <Text style={styles.bank}>
-          {promotion.banks?.name ??
-            'Bank'}
-        </Text>
-
-        {/* TYTUŁ */}
-
-        <Text style={styles.title}>
-          {promotion.title}
-        </Text>
-
-        {/* BONUS */}
-
-        <Text style={styles.bonus}>
-          +{promotion.bonus_amount} zł
-        </Text>
-
-        {/* OPIS */}
-
-        {promotion.description && (
-          <Text
-            style={
-              styles.description
-            }
-          >
-            {promotion.description}
-          </Text>
-        )}
-
-        {/* TERMIN PROMOCJI */}
+        {/* HERO */}
 
         <View
           style={
-            styles.dateCard
+            styles.heroCard
           }
         >
+          <View
+            style={
+              styles.bankRow
+            }
+          >
+            <View
+              style={
+                styles.bankIcon
+              }
+            >
+              <Text
+                style={
+                  styles.bankIconText
+                }
+              >
+                {promotion.banks?.name
+                  ?.charAt(
+                    0
+                  )
+                  .toUpperCase() ??
+                  'B'}
+              </Text>
+            </View>
+
+            <Text
+              style={
+                styles.bankName
+              }
+            >
+              {promotion
+                .banks
+                ?.name ??
+                'Bank'}
+            </Text>
+          </View>
+
+          <View
+            style={
+              styles.badgesRow
+            }
+          >
+            {categoryLabel && (
+              <View
+                style={
+                  styles.categoryBadge
+                }
+              >
+                <Text
+                  style={
+                    styles.categoryBadgeText
+                  }
+                >
+                  {
+                    categoryLabel
+                  }
+                </Text>
+              </View>
+            )}
+
+            {difficultyConfig && (
+              <View
+                style={[
+                  styles.difficultyBadge,
+                  {
+                    backgroundColor:
+                      difficultyConfig.backgroundColor,
+                  },
+                ]}
+              >
+                <View
+                  style={[
+                    styles.difficultyDot,
+                    {
+                      backgroundColor:
+                        difficultyConfig.color,
+                    },
+                  ]}
+                />
+
+                <Text
+                  style={[
+                    styles.difficultyText,
+                    {
+                      color:
+                        difficultyConfig.color,
+                    },
+                  ]}
+                >
+                  {
+                    difficultyConfig.label
+                  }
+                </Text>
+              </View>
+            )}
+          </View>
+
+          <Text
+            style={
+              styles.promotionTitle
+            }
+          >
+            {promotion.title}
+          </Text>
+
+          <Text
+            style={
+              styles.bonusLabel
+            }
+          >
+            DO ZDOBYCIA
+          </Text>
+
+          <Text
+            style={
+              styles.bonusAmount
+            }
+          >
+            +
+            {
+              promotion.bonus_amount
+            }{' '}
+            zł
+          </Text>
+
+          {daysRemainingLabel && (
+            <View
+              style={[
+                styles.daysBadge,
+                promotionExpired &&
+                  styles.daysBadgeExpired,
+
+                daysRemaining !==
+                  null &&
+                  daysRemaining >=
+                    0 &&
+                  daysRemaining <=
+                    3 &&
+                  styles.daysBadgeUrgent,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.daysBadgeText,
+                  promotionExpired &&
+                    styles.daysBadgeTextExpired,
+
+                  daysRemaining !==
+                    null &&
+                    daysRemaining >=
+                      0 &&
+                    daysRemaining <=
+                      3 &&
+                    styles.daysBadgeTextUrgent,
+                ]}
+              >
+                {
+                  daysRemainingLabel
+                }
+              </Text>
+            </View>
+          )}
+        </View>
+
+        {/* GŁÓWNY CTA */}
+
+        {promotion.application_url &&
+          !promotionExpired && (
+            <TouchableOpacity
+              style={
+                styles.primaryCta
+              }
+              activeOpacity={
+                0.85
+              }
+              onPress={() =>
+                Linking.openURL(
+                  promotion.application_url!
+                )
+              }
+            >
+              <Text
+                style={
+                  styles.primaryCtaSmall
+                }
+              >
+                PRZEJDŹ DO
+                BANKU
+              </Text>
+
+              <Text
+                style={
+                  styles.primaryCtaText
+                }
+              >
+                Otwórz konto i
+                zdobądź{' '}
+                {
+                  promotion.bonus_amount
+                }{' '}
+                zł →
+              </Text>
+            </TouchableOpacity>
+          )}
+
+        {/* MOJE PROMOCJE */}
+
+        {isInMyPromotions ? (
+          <View
+            style={
+              styles.trackingCard
+            }
+          >
+            <Text
+              style={
+                styles.trackingTitle
+              }
+            >
+              ✓ W Twoich
+              promocjach
+            </Text>
+
+            <Text
+              style={
+                styles.trackingDescription
+              }
+            >
+              Śledzimy Twój
+              postęp i terminy
+              tej promocji.
+            </Text>
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={
+              styles.addPromotionButton
+            }
+            onPress={
+              addToMyPromotions
+            }
+            disabled={
+              addingPromotion
+            }
+            activeOpacity={
+              0.8
+            }
+          >
+            {addingPromotion ? (
+              <ActivityIndicator
+                color="#2563EB"
+              />
+            ) : (
+              <Text
+                style={
+                  styles.addPromotionText
+                }
+              >
+                + Dodaj do moich
+                promocji
+              </Text>
+            )}
+          </TouchableOpacity>
+        )}
+
+        {/* NAJWAŻNIEJSZE INFORMACJE */}
+
+        <View
+          style={
+            styles.sectionCard
+          }
+        >
+          <Text
+            style={
+              styles.sectionTitle
+            }
+          >
+            Najważniejsze
+            informacje
+          </Text>
+
+          <View
+            style={
+              styles.infoRow
+            }
+          >
+            <View
+              style={
+                styles.infoItem
+              }
+            >
+              <Text
+                style={
+                  styles.infoLabel
+                }
+              >
+                Konto
+              </Text>
+
+              <Text
+                style={
+                  styles.infoValue
+                }
+              >
+                {formatFee(
+                  promotion.account_fee
+                )}
+              </Text>
+            </View>
+
+            <View
+              style={
+                styles.infoDivider
+              }
+            />
+
+            <View
+              style={
+                styles.infoItem
+              }
+            >
+              <Text
+                style={
+                  styles.infoLabel
+                }
+              >
+                Karta
+              </Text>
+
+              <Text
+                style={
+                  styles.infoValue
+                }
+              >
+                {formatFee(
+                  promotion.card_fee
+                )}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {/* DATY */}
+
+        <View
+          style={
+            styles.sectionCard
+          }
+        >
+          <Text
+            style={
+              styles.sectionTitle
+            }
+          >
+            Termin promocji
+          </Text>
+
           <View
             style={
               styles.dateRow
             }
           >
-            <View>
+            <View
+              style={
+                styles.dateItem
+              }
+            >
               <Text
                 style={
-                  styles.dateLabel
+                  styles.infoLabel
                 }
               >
-                Początek promocji
+                Start
               </Text>
 
               <Text
                 style={
-                  styles.dateValue
+                  styles.infoValue
                 }
               >
                 {formatDate(
@@ -634,20 +1546,20 @@ export default function PromotionScreen() {
 
             <View
               style={
-                styles.dateRight
+                styles.dateItem
               }
             >
               <Text
                 style={
-                  styles.dateLabel
+                  styles.infoLabel
                 }
               >
-                Koniec promocji
+                Koniec
               </Text>
 
               <Text
                 style={
-                  styles.dateValue
+                  styles.infoValue
                 }
               >
                 {formatDate(
@@ -656,197 +1568,349 @@ export default function PromotionScreen() {
               </Text>
             </View>
           </View>
-
-          {daysRemaining !== null && (
-            <View
-              style={[
-                styles.remainingBadge,
-                daysRemaining <= 3 &&
-                  styles.remainingBadgeUrgent,
-                daysRemaining < 0 &&
-                  styles.remainingBadgeExpired,
-              ]}
-            >
-              <Text
-                style={
-                  styles.remainingText
-                }
-              >
-                {daysRemaining < 0
-                  ? 'Promocja zakończona'
-                  : daysRemaining === 0
-                  ? 'Promocja kończy się dzisiaj'
-                  : daysRemaining === 1
-                  ? 'Został 1 dzień'
-                  : `Zostało ${daysRemaining} dni`}
-              </Text>
-            </View>
-          )}
         </View>
 
-        {/* POSTĘP */}
+        {/* OPIS */}
+
+        {promotion.description && (
+          <View
+            style={
+              styles.sectionCard
+            }
+          >
+            <Text
+              style={
+                styles.sectionTitle
+              }
+            >
+              O promocji
+            </Text>
+
+            <Text
+              style={
+                styles.description
+              }
+            >
+              {
+                promotion.description
+              }
+            </Text>
+          </View>
+        )}
+
+        {/* CHECKLISTA */}
 
         <View
           style={
-            styles.progressCard
+            styles.sectionCard
           }
         >
-          <View
-            style={
-              styles.progressHeader
-            }
-          >
-            <Text
-              style={
-                styles.progressLabel
-              }
-            >
-              Twój postęp
-            </Text>
-
-            <Text
-              style={
-                styles.progressPercent
-              }
-            >
-              {progress}%
-            </Text>
-          </View>
-
-          <View
-            style={
-              styles.progressBackground
-            }
-          >
-            <View
-              style={[
-                styles.progress,
-                {
-                  width: `${progress}%`,
-                },
-              ]}
-            />
-          </View>
-
           <Text
             style={
-              styles.progressText
+              styles.sectionTitle
             }
           >
-            {completedCount} z{' '}
-            {tasks.length} wykonanych
+            Jak zdobyć premię?
           </Text>
-        </View>
 
-        {/* ZADANIA */}
-
-        <Text
-          style={
-            styles.sectionTitle
-          }
-        >
-          Co musisz zrobić?
-        </Text>
-
-        {tasks.map(
-          (task, index) => (
-            <TouchableOpacity
-              key={task.id}
-              style={[
-                styles.task,
-                savingTask ===
-                  task.id &&
-                  styles.taskSaving,
-              ]}
-              onPress={() =>
-                toggleTask(index)
-              }
-              activeOpacity={0.7}
-              disabled={
-                savingTask === task.id
-              }
-            >
+          {tasks.length >
+          0 ? (
+            <>
               <View
-                style={[
-                  styles.checkbox,
-                  completed[index] &&
-                    styles.checkboxCompleted,
-                ]}
+                style={
+                  styles.progressHeader
+                }
               >
-                {completed[index] && (
-                  <Text
-                    style={
-                      styles.checkmark
-                    }
-                  >
-                    ✓
-                  </Text>
-                )}
+                <Text
+                  style={
+                    styles.progressText
+                  }
+                >
+                  {
+                    completedCount
+                  }{' '}
+                  z{' '}
+                  {
+                    tasks.length
+                  }{' '}
+                  warunków
+                </Text>
+
+                <Text
+                  style={
+                    styles.progressPercent
+                  }
+                >
+                  {
+                    progressPercent
+                  }
+                  %
+                </Text>
               </View>
 
               <View
                 style={
-                  styles.taskContent
+                  styles.progressTrack
                 }
               >
-                <Text
+                <View
                   style={[
-                    styles.taskText,
-                    completed[index] &&
-                      styles.taskCompleted,
+                    styles.progressBar,
+                    {
+                      width: `${progressPercent}%`,
+                    },
                   ]}
-                >
-                  {task.title}
-                </Text>
+                />
+              </View>
 
-                {task.description && (
-                  <Text
-                    style={
-                      styles.taskDescription
-                    }
-                  >
-                    {task.description}
-                  </Text>
-                )}
+              <View
+                style={
+                  styles.tasksContainer
+                }
+              >
+                {tasks.map(
+                  (
+                    task,
+                    index
+                  ) => {
+                    const completed =
+                      progress[
+                        task.id
+                      ] === true;
 
-                {savingTask ===
-                  task.id && (
-                  <Text
-                    style={
-                      styles.savingText
-                    }
-                  >
-                    Zapisywanie...
-                  </Text>
+                    const deadline =
+                      getTaskDeadlineLabel(
+                        task.due_date
+                      );
+
+                    const saving =
+                      savingTaskId ===
+                      task.id;
+
+                    return (
+                      <TouchableOpacity
+                        key={
+                          task.id
+                        }
+                        style={[
+                          styles.taskCard,
+                          completed &&
+                            styles.taskCardCompleted,
+                        ]}
+                        activeOpacity={
+                          0.8
+                        }
+                        disabled={
+                          saving
+                        }
+                        onPress={() =>
+                          toggleTask(
+                            task
+                          )
+                        }
+                      >
+                        <View
+                          style={
+                            styles.taskTopRow
+                          }
+                        >
+                          <View
+                            style={[
+                              styles.taskNumber,
+                              completed &&
+                                styles.taskNumberCompleted,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.taskNumberText,
+                                completed &&
+                                  styles.taskNumberTextCompleted,
+                              ]}
+                            >
+                              {index +
+                                1}
+                            </Text>
+                          </View>
+
+                          <View
+                            style={
+                              styles.taskContent
+                            }
+                          >
+                            <Text
+                              style={[
+                                styles.taskTitle,
+                                completed &&
+                                  styles.taskTitleCompleted,
+                              ]}
+                            >
+                              {
+                                task.title
+                              }
+                            </Text>
+
+                            {task.description && (
+                              <Text
+                                style={[
+                                  styles.taskDescription,
+                                  completed &&
+                                    styles.taskDescriptionCompleted,
+                                ]}
+                              >
+                                {
+                                  task.description
+                                }
+                              </Text>
+                            )}
+
+                            {deadline && (
+                              <View
+                                style={[
+                                  styles.deadlineBadge,
+                                  {
+                                    backgroundColor:
+                                      deadline.backgroundColor,
+                                  },
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.deadlineText,
+                                    {
+                                      color:
+                                        deadline.color,
+                                    },
+                                  ]}
+                                >
+                                  ⏱{' '}
+                                  {
+                                    deadline.label
+                                  }
+                                </Text>
+                              </View>
+                            )}
+                          </View>
+
+                          <View
+                            style={[
+                              styles.checkbox,
+                              completed &&
+                                styles.checkboxCompleted,
+                            ]}
+                          >
+                            {saving ? (
+                              <ActivityIndicator
+                                size="small"
+                                color={
+                                  completed
+                                    ? '#FFFFFF'
+                                    : '#2563EB'
+                                }
+                              />
+                            ) : (
+                              completed && (
+                                <Text
+                                  style={
+                                    styles.checkmark
+                                  }
+                                >
+                                  ✓
+                                </Text>
+                              )
+                            )}
+                          </View>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  }
                 )}
               </View>
-            </TouchableOpacity>
-          )
-        )}
-
-        {/* LINK DO APLIKACJI */}
-
-        {promotion.application_url && (
-          <TouchableOpacity
-            style={
-              styles.applicationButton
-            }
-            activeOpacity={0.8}
-            onPress={() =>
-              openUrl(
-                promotion.application_url
-              )
-            }
-          >
+            </>
+          ) : (
             <Text
               style={
-                styles.applicationButtonText
+                styles.noTasksText
               }
             >
-              Przejdź do promocji →
+              Dla tej promocji
+              nie dodano jeszcze
+              warunków.
             </Text>
-          </TouchableOpacity>
-        )}
+          )}
+        </View>
+
+        {/* SUKCES */}
+
+        {tasks.length >
+          0 &&
+          progressPercent ===
+            100 && (
+            <View
+              style={
+                styles.successCard
+              }
+            >
+              <Text
+                style={
+                  styles.successEmoji
+                }
+              >
+                🎉
+              </Text>
+
+              <Text
+                style={
+                  styles.successTitle
+                }
+              >
+                Wszystkie warunki
+                wykonane!
+              </Text>
+
+              <Text
+                style={
+                  styles.successDescription
+                }
+              >
+                Świetna robota.
+                Oznaczyliśmy tę
+                promocję jako
+                ukończoną.
+              </Text>
+            </View>
+          )}
+
+        {/* DOLNY CTA */}
+
+        {promotion.application_url &&
+          !promotionExpired && (
+            <TouchableOpacity
+              style={
+                styles.bottomCta
+              }
+              activeOpacity={
+                0.85
+              }
+              onPress={() =>
+                Linking.openURL(
+                  promotion.application_url!
+                )
+              }
+            >
+              <Text
+                style={
+                  styles.bottomCtaText
+                }
+              >
+                Zdobądź{' '}
+                {
+                  promotion.bonus_amount
+                }{' '}
+                zł →
+              </Text>
+            </TouchableOpacity>
+          )}
 
         {/* REGULAMIN */}
 
@@ -855,341 +1919,597 @@ export default function PromotionScreen() {
             style={
               styles.termsButton
             }
-            activeOpacity={0.7}
+            activeOpacity={
+              0.8
+            }
             onPress={() =>
-              openUrl(
-                promotion.terms_url
+              Linking.openURL(
+                promotion.terms_url!
               )
             }
           >
             <Text
               style={
-                styles.termsButtonText
+                styles.termsText
               }
             >
-              Zobacz regulamin promocji
+              Regulamin
+              promocji ↗
             </Text>
           </TouchableOpacity>
         )}
 
-        {/* SUCCESS */}
-
-        {progress === 100 && (
-          <View
-            style={
-              styles.successCard
-            }
-          >
-            <Text
-              style={
-                styles.successTitle
-              }
-            >
-              🎉 Wszystko gotowe!
-            </Text>
-
-            <Text
-              style={
-                styles.successText
-              }
-            >
-              Spełniłeś wszystkie
-              warunki promocji.
-            </Text>
-          </View>
-        )}
+        <Text
+          style={
+            styles.disclaimer
+          }
+        >
+          Przed skorzystaniem
+          z promocji sprawdź
+          aktualne warunki i
+          regulamin banku.
+        </Text>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F6FA',
-  },
+const styles =
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor:
+        '#F5F6FA',
+    },
 
-  content: {
-    padding: 20,
-    paddingBottom: 50,
-  },
+    scrollContent: {
+      padding: 20,
+      paddingBottom: 50,
+    },
 
-  backButton: {
-    marginBottom: 24,
-  },
+    backButton: {
+      marginBottom: 18,
+    },
 
-  backText: {
-    fontSize: 16,
-    color: '#2563EB',
-    fontWeight: '600',
-  },
+    backText: {
+      fontSize: 16,
+      color: '#2563EB',
+      fontWeight: '600',
+    },
 
-  bank: {
-    fontSize: 16,
-    color: '#6B7280',
-    fontWeight: '600',
-    marginBottom: 8,
-  },
+    heroCard: {
+      backgroundColor:
+        '#FFFFFF',
+      borderRadius: 22,
+      padding: 22,
+      marginBottom: 16,
+    },
 
-  title: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: '#111827',
-  },
+    bankRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 16,
+    },
 
-  bonus: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#16A34A',
-    marginTop: 8,
-  },
+    bankIcon: {
+      width: 44,
+      height: 44,
+      borderRadius: 14,
+      backgroundColor:
+        '#EFF6FF',
+      justifyContent:
+        'center',
+      alignItems: 'center',
+      marginRight: 12,
+    },
 
-  description: {
-    fontSize: 16,
-    color: '#6B7280',
-    lineHeight: 24,
-    marginTop: 10,
-    marginBottom: 20,
-  },
+    bankIconText: {
+      color: '#2563EB',
+      fontSize: 20,
+      fontWeight: '800',
+    },
 
-  dateCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 20,
-    marginBottom: 20,
-  },
+    bankName: {
+      color: '#374151',
+      fontWeight: '700',
+      fontSize: 16,
+    },
 
-  dateRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
+    badgesRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+      marginBottom: 14,
+    },
 
-  dateRight: {
-    alignItems: 'flex-end',
-  },
+    categoryBadge: {
+      backgroundColor:
+        '#EFF6FF',
+      borderRadius: 999,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+    },
 
-  dateLabel: {
-    fontSize: 12,
-    color: '#9CA3AF',
-    marginBottom: 5,
-  },
+    categoryBadgeText: {
+      color: '#2563EB',
+      fontSize: 12,
+      fontWeight: '700',
+    },
 
-  dateValue: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#111827',
-  },
+    difficultyBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      borderRadius: 999,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+    },
 
-  remainingBadge: {
-    backgroundColor: '#DCFCE7',
-    borderRadius: 10,
-    paddingVertical: 9,
-    paddingHorizontal: 12,
-    marginTop: 16,
-    alignItems: 'center',
-  },
+    difficultyDot: {
+      width: 7,
+      height: 7,
+      borderRadius: 4,
+      marginRight: 6,
+    },
 
-  remainingBadgeUrgent: {
-    backgroundColor: '#FEF3C7',
-  },
+    difficultyText: {
+      fontSize: 12,
+      fontWeight: '700',
+    },
 
-  remainingBadgeExpired: {
-    backgroundColor: '#FEE2E2',
-  },
+    promotionTitle: {
+      fontSize: 25,
+      lineHeight: 31,
+      fontWeight: '800',
+      color: '#111827',
+      marginBottom: 22,
+    },
 
-  remainingText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#166534',
-  },
+    bonusLabel: {
+      fontSize: 11,
+      fontWeight: '800',
+      color: '#9CA3AF',
+      letterSpacing: 1,
+    },
 
-  progressCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 20,
-    marginBottom: 30,
-  },
+    bonusAmount: {
+      marginTop: 4,
+      fontSize: 38,
+      fontWeight: '900',
+      color: '#16A34A',
+    },
 
-  progressHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
+    daysBadge: {
+      alignSelf:
+        'flex-start',
+      backgroundColor:
+        '#EFF6FF',
+      borderRadius: 999,
+      paddingHorizontal: 11,
+      paddingVertical: 7,
+      marginTop: 14,
+    },
 
-  progressLabel: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#111827',
-  },
+    daysBadgeUrgent: {
+      backgroundColor:
+        '#FEF2F2',
+    },
 
-  progressPercent: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#2563EB',
-  },
+    daysBadgeExpired: {
+      backgroundColor:
+        '#F3F4F6',
+    },
 
-  progressBackground: {
-    height: 10,
-    backgroundColor: '#E5E7EB',
-    borderRadius: 5,
-    overflow: 'hidden',
-  },
+    daysBadgeText: {
+      color: '#2563EB',
+      fontSize: 13,
+      fontWeight: '700',
+    },
 
-  progress: {
-    height: 10,
-    backgroundColor: '#2563EB',
-    borderRadius: 5,
-  },
+    daysBadgeTextUrgent: {
+      color: '#DC2626',
+    },
 
-  progressText: {
-    marginTop: 10,
-    fontSize: 13,
-    color: '#6B7280',
-  },
+    daysBadgeTextExpired: {
+      color: '#6B7280',
+    },
 
-  sectionTitle: {
-    fontSize: 21,
-    fontWeight: '700',
-    color: '#111827',
-    marginBottom: 14,
-  },
+    primaryCta: {
+      backgroundColor:
+        '#2563EB',
+      borderRadius: 18,
+      paddingVertical: 17,
+      paddingHorizontal: 20,
+      marginBottom: 14,
+    },
 
-  task: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
+    primaryCtaSmall: {
+      fontSize: 10,
+      color: '#BFDBFE',
+      fontWeight: '800',
+      letterSpacing: 1,
+      marginBottom: 4,
+    },
 
-  taskSaving: {
-    opacity: 0.6,
-  },
+    primaryCtaText: {
+      fontSize: 17,
+      color: '#FFFFFF',
+      fontWeight: '800',
+    },
 
-  checkbox: {
-    width: 26,
-    height: 26,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: '#D1D5DB',
-    marginRight: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+    addPromotionButton: {
+      backgroundColor:
+        '#FFFFFF',
+      borderRadius: 16,
+      borderWidth: 1.5,
+      borderColor: '#2563EB',
+      paddingVertical: 16,
+      alignItems: 'center',
+      marginBottom: 16,
+    },
 
-  checkboxCompleted: {
-    backgroundColor: '#2563EB',
-    borderColor: '#2563EB',
-  },
+    addPromotionText: {
+      color: '#2563EB',
+      fontSize: 16,
+      fontWeight: '700',
+    },
 
-  checkmark: {
-    color: '#FFFFFF',
-    fontSize: 17,
-    fontWeight: '800',
-  },
+    trackingCard: {
+      backgroundColor:
+        '#ECFDF5',
+      borderRadius: 16,
+      padding: 17,
+      marginBottom: 16,
+      borderWidth: 1,
+      borderColor: '#BBF7D0',
+    },
 
-  taskContent: {
-    flex: 1,
-  },
+    trackingTitle: {
+      color: '#15803D',
+      fontSize: 16,
+      fontWeight: '800',
+      marginBottom: 4,
+    },
 
-  taskText: {
-    fontSize: 16,
-    color: '#111827',
-  },
+    trackingDescription: {
+      color: '#166534',
+      fontSize: 13,
+      lineHeight: 19,
+    },
 
-  taskCompleted: {
-    color: '#9CA3AF',
-    textDecorationLine: 'line-through',
-  },
+    sectionCard: {
+      backgroundColor:
+        '#FFFFFF',
+      borderRadius: 20,
+      padding: 20,
+      marginBottom: 16,
+    },
 
-  taskDescription: {
-    fontSize: 13,
-    color: '#6B7280',
-    marginTop: 4,
-    lineHeight: 18,
-  },
+    sectionTitle: {
+      fontSize: 19,
+      fontWeight: '800',
+      color: '#111827',
+      marginBottom: 17,
+    },
 
-  savingText: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginTop: 5,
-  },
+    infoRow: {
+      flexDirection: 'row',
+      alignItems: 'stretch',
+    },
 
-  applicationButton: {
-    backgroundColor: '#2563EB',
-    borderRadius: 14,
-    paddingVertical: 17,
-    alignItems: 'center',
-    marginTop: 12,
-  },
+    infoItem: {
+      flex: 1,
+    },
 
-  applicationButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-  },
+    infoDivider: {
+      width: 1,
+      backgroundColor:
+        '#E5E7EB',
+      marginHorizontal: 18,
+    },
 
-  termsButton: {
-    paddingVertical: 16,
-    alignItems: 'center',
-  },
+    infoLabel: {
+      fontSize: 12,
+      color: '#6B7280',
+      marginBottom: 5,
+    },
 
-  termsButtonText: {
-    color: '#2563EB',
-    fontSize: 14,
-    fontWeight: '600',
-  },
+    infoValue: {
+      fontSize: 15,
+      color: '#111827',
+      fontWeight: '700',
+    },
 
-  successCard: {
-    backgroundColor: '#DCFCE7',
-    borderRadius: 18,
-    padding: 20,
-    marginTop: 10,
-  },
+    dateRow: {
+      flexDirection: 'row',
+      justifyContent:
+        'space-between',
+      gap: 16,
+    },
 
-  successTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#166534',
-  },
+    dateItem: {
+      flex: 1,
+      backgroundColor:
+        '#F9FAFB',
+      padding: 14,
+      borderRadius: 14,
+    },
 
-  successText: {
-    fontSize: 14,
-    color: '#166534',
-    marginTop: 6,
-  },
+    description: {
+      color: '#4B5563',
+      fontSize: 15,
+      lineHeight: 23,
+    },
 
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F5F6FA',
-    padding: 20,
-  },
+    progressHeader: {
+      flexDirection: 'row',
+      justifyContent:
+        'space-between',
+      alignItems: 'center',
+      marginBottom: 8,
+    },
 
-  loadingText: {
-    marginTop: 12,
-    fontSize: 15,
-    color: '#6B7280',
-  },
+    progressText: {
+      color: '#6B7280',
+      fontSize: 13,
+      fontWeight: '600',
+    },
 
-  errorText: {
-    fontSize: 16,
-    color: '#DC2626',
-    textAlign: 'center',
-    marginBottom: 20,
-  },
+    progressPercent: {
+      color: '#2563EB',
+      fontSize: 14,
+      fontWeight: '800',
+    },
 
-  retryButton: {
-    backgroundColor: '#2563EB',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 10,
-  },
+    progressTrack: {
+      height: 8,
+      backgroundColor:
+        '#E5E7EB',
+      borderRadius: 999,
+      overflow: 'hidden',
+      marginBottom: 18,
+    },
 
-  retryButtonText: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-});
+    progressBar: {
+      height: '100%',
+      backgroundColor:
+        '#2563EB',
+      borderRadius: 999,
+    },
+
+    tasksContainer: {
+      gap: 10,
+    },
+
+    taskCard: {
+      borderWidth: 1,
+      borderColor: '#E5E7EB',
+      borderRadius: 16,
+      padding: 15,
+      backgroundColor:
+        '#FFFFFF',
+    },
+
+    taskCardCompleted: {
+      backgroundColor:
+        '#F0FDF4',
+      borderColor: '#BBF7D0',
+    },
+
+    taskTopRow: {
+      flexDirection: 'row',
+      alignItems:
+        'flex-start',
+    },
+
+    taskNumber: {
+      width: 31,
+      height: 31,
+      borderRadius: 10,
+      backgroundColor:
+        '#EFF6FF',
+      alignItems: 'center',
+      justifyContent:
+        'center',
+      marginRight: 12,
+    },
+
+    taskNumberCompleted: {
+      backgroundColor:
+        '#DCFCE7',
+    },
+
+    taskNumberText: {
+      color: '#2563EB',
+      fontWeight: '800',
+    },
+
+    taskNumberTextCompleted: {
+      color: '#15803D',
+    },
+
+    taskContent: {
+      flex: 1,
+      paddingRight: 10,
+    },
+
+    taskTitle: {
+      color: '#111827',
+      fontSize: 15,
+      lineHeight: 20,
+      fontWeight: '700',
+    },
+
+    taskTitleCompleted: {
+      color: '#6B7280',
+      textDecorationLine:
+        'line-through',
+    },
+
+    taskDescription: {
+      color: '#6B7280',
+      fontSize: 13,
+      lineHeight: 19,
+      marginTop: 5,
+    },
+
+    taskDescriptionCompleted: {
+      color: '#9CA3AF',
+    },
+
+    deadlineBadge: {
+      alignSelf:
+        'flex-start',
+      borderRadius: 999,
+      paddingHorizontal: 9,
+      paddingVertical: 5,
+      marginTop: 9,
+    },
+
+    deadlineText: {
+      fontSize: 11,
+      fontWeight: '700',
+    },
+
+    checkbox: {
+      width: 27,
+      height: 27,
+      borderRadius: 9,
+      borderWidth: 2,
+      borderColor: '#D1D5DB',
+      justifyContent:
+        'center',
+      alignItems: 'center',
+    },
+
+    checkboxCompleted: {
+      backgroundColor:
+        '#16A34A',
+      borderColor: '#16A34A',
+    },
+
+    checkmark: {
+      color: '#FFFFFF',
+      fontSize: 16,
+      fontWeight: '900',
+    },
+
+    noTasksText: {
+      color: '#6B7280',
+      fontSize: 14,
+      lineHeight: 21,
+    },
+
+    successCard: {
+      backgroundColor:
+        '#ECFDF5',
+      borderColor: '#BBF7D0',
+      borderWidth: 1,
+      borderRadius: 20,
+      padding: 22,
+      alignItems: 'center',
+      marginBottom: 16,
+    },
+
+    successEmoji: {
+      fontSize: 34,
+      marginBottom: 10,
+    },
+
+    successTitle: {
+      color: '#166534',
+      fontSize: 19,
+      fontWeight: '800',
+      marginBottom: 6,
+      textAlign: 'center',
+    },
+
+    successDescription: {
+      color: '#15803D',
+      fontSize: 14,
+      lineHeight: 20,
+      textAlign: 'center',
+    },
+
+    bottomCta: {
+      backgroundColor:
+        '#2563EB',
+      borderRadius: 17,
+      paddingVertical: 17,
+      alignItems: 'center',
+      marginBottom: 12,
+    },
+
+    bottomCtaText: {
+      color: '#FFFFFF',
+      fontSize: 17,
+      fontWeight: '800',
+    },
+
+    termsButton: {
+      backgroundColor:
+        '#FFFFFF',
+      borderRadius: 16,
+      paddingVertical: 16,
+      alignItems: 'center',
+      marginBottom: 14,
+      borderWidth: 1,
+      borderColor: '#E5E7EB',
+    },
+
+    termsText: {
+      color: '#2563EB',
+      fontSize: 15,
+      fontWeight: '700',
+    },
+
+    disclaimer: {
+      color: '#9CA3AF',
+      fontSize: 11,
+      lineHeight: 17,
+      textAlign: 'center',
+      paddingHorizontal: 15,
+    },
+
+    loadingContainer: {
+      flex: 1,
+      justifyContent:
+        'center',
+      alignItems: 'center',
+      backgroundColor:
+        '#F5F6FA',
+      padding: 30,
+    },
+
+    loadingText: {
+      color: '#6B7280',
+      marginTop: 12,
+    },
+
+    errorTitle: {
+      fontSize: 20,
+      fontWeight: '800',
+      color: '#111827',
+      textAlign: 'center',
+      marginBottom: 8,
+    },
+
+    errorText: {
+      fontSize: 14,
+      color: '#6B7280',
+      textAlign: 'center',
+      marginBottom: 20,
+    },
+
+    backErrorButton: {
+      paddingHorizontal: 20,
+      paddingVertical: 12,
+      backgroundColor:
+        '#2563EB',
+      borderRadius: 12,
+    },
+
+    backErrorText: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+    },
+  });
