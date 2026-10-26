@@ -156,21 +156,34 @@ export default function MyPromotionsScreen() {
         return;
       }
 
-      const userPromotions: UserPromotion[] = (
+      
+const userPromotions: UserPromotion[] = (
   userPromotionsData ?? []
 ).map((item) => {
-  const promotion = item.promotions?.[0] ?? null;
+  const rawPromotion = item.promotions;
+
+  const promotion = Array.isArray(rawPromotion)
+    ? rawPromotion[0] ?? null
+    : rawPromotion ?? null;
+
+  const rawBanks = promotion?.banks;
+
+  const bank = Array.isArray(rawBanks)
+    ? rawBanks[0] ?? null
+    : rawBanks ?? null;
 
   return {
     ...item,
     promotions: promotion
       ? {
           ...promotion,
-          banks: promotion.banks?.[0] ?? null,
+          banks: bank,
         }
       : null,
   };
 });
+
+  
 
       if (userPromotions.length === 0) {
         setItems([]);
