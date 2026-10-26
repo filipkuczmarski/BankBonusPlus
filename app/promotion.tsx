@@ -1,11 +1,20 @@
+import AddPromotionModal from '@/components/AddPromotionModal';
+import UserPromotionSchedule from '@/components/UserPromotionSchedule';
+import { syncUserPromotionNotifications } from '@/lib/dynamicNotifications';
+
+
 import {
   cancelTaskNotifications,
-  schedulePromotionTaskNotifications,
-  scheduleTaskNotifications,
+  scheduleTaskNotifications
 } from '@/lib/notifications';
+
 import { supabase } from '@/lib/supabase';
+
+import UserPromotionTimeline from '@/components/UserPromotionTimeline';
+
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
+
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,6 +25,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+
+
+
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 type PromotionCategory =
@@ -58,9 +70,60 @@ type Task = {
   description: string | null;
   task_order: number;
   due_date: string | null;
+  task_type: 'checkbox' | 'counter';
+  target_count: number;
+  period_label: string | null;
+  period_order: number | null;
 };
 
-type ProgressMap = Record<string, boolean>;
+type TaskProgress = {
+  completed: boolean;
+  current_count: number;
+};
+
+type ProgressMap = Record<string, TaskProgress>;
+
+type StartPromotionValues = {
+  accountOpenedAt?: Date;
+  promotionRegisteredAt?: Date;
+};
+
+const ACCOUNT_PERIOD_TYPES = [
+  'account_open_month',
+  'full_month_after_open',
+  'nth_full_month_after_open',
+  'days_after_open',
+];
+
+const ACCOUNT_DEADLINE_TYPES = [
+  'days_after_account_open',
+  'end_of_account_open_month',
+  'end_of_nth_full_month',
+];
+
+const JOIN_PERIOD_TYPES = [
+  'join_month',
+];
+
+const JOIN_DEADLINE_TYPES = [
+  'days_after_join',
+  'end_of_join_month',
+];
+
+const formatDateForDatabase = (date: Date) => {
+  const year = date.getFullYear();
+
+  const month = String(
+    date.getMonth() + 1
+  ).padStart(2, '0');
+
+  const day = String(
+    date.getDate()
+  ).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
+};
+
 
 const getCategoryLabel = (
   category: PromotionCategory | null
@@ -268,10 +331,13 @@ const getTaskDeadlineLabel = (
 };
 
 export default function PromotionScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
   const params =
     useLocalSearchParams<{
       id?: string;
     }>();
+  const [timelineRefreshKey, setTimelineRefreshKey] =
+  useState(0);
 
   const promotionId =
     Array.isArray(params.id)
@@ -321,6 +387,53 @@ export default function PromotionScreen() {
     useState(false);
 
   const [
+    userPromotionStatus,
+    setUserPromotionStatus,
+  ] =
+    useState<string | null>(
+      null
+    );
+
+
+  const [
+    userPromotionId,
+    setUserPromotionId,
+  ] =
+    useState<string | null>(
+      null
+    );
+
+  const [
+    startPromotionModalVisible,
+    setStartPromotionModalVisible,
+  ] =
+    useState(false);
+
+  const [
+    requireAccountOpenedAt,
+    setRequireAccountOpenedAt,
+  ] =
+    useState(false);
+
+  const [
+    requirePromotionRegisteredAt,
+    setRequirePromotionRegisteredAt,
+  ] =
+    useState(false);
+
+  const [
+    startingPromotion,
+    setStartingPromotion,
+  ] =
+    useState(false);
+
+  const [
+    removingPromotion,
+    setRemovingPromotion,
+  ] =
+    useState(false);
+
+  const [
     addingPromotion,
     setAddingPromotion,
   ] =
@@ -334,22 +447,8 @@ export default function PromotionScreen() {
       null
     );
 
-  useEffect(() => {
-    if (!promotionId) {
-      setError(
-        'Nie znaleziono promocji.'
-      );
 
-      setLoading(false);
-
-      return;
-    }
-
-    loadPromotion();
-  }, [promotionId]);
-
-  const loadPromotion =
-    async () => {
+ const loadPromotion = useCallback(async () => {
       if (!promotionId) {
         return;
       }
@@ -418,7 +517,11 @@ export default function PromotionScreen() {
               title,
               description,
               task_order,
-              due_date
+              due_date,
+              task_type,
+              target_count,
+              period_label,
+              period_order
             `
             )
             .eq(
@@ -461,6 +564,14 @@ export default function PromotionScreen() {
             false
           );
 
+          setUserPromotionStatus(
+            null
+          );
+
+          setUserPromotionId(
+            null
+          );
+
           return;
         }
 
@@ -499,6 +610,16 @@ export default function PromotionScreen() {
           )
         );
 
+        setUserPromotionStatus(
+          userPromotion?.status ??
+            null
+        );
+
+        setUserPromotionId(
+          userPromotion?.id ??
+            null
+        );
+
         if (
           loadedTasks.length ===
           0
@@ -523,7 +644,7 @@ export default function PromotionScreen() {
               'user_task_progress'
             )
             .select(
-              'task_id, completed'
+              'task_id, completed, current_count'
             )
             .eq(
               'user_id',
@@ -551,8 +672,10 @@ export default function PromotionScreen() {
         ) {
           progressMap[
             row.task_id
-          ] =
-            row.completed;
+          ] = {
+            completed: row.completed === true,
+            current_count: row.current_count ?? 0,
+          };
         }
 
         setProgress(
@@ -574,7 +697,17 @@ export default function PromotionScreen() {
           false
         );
       }
-    };
+    }, [promotionId]);
+
+
+   
+
+useEffect(() => {
+  if (promotionId) {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadPromotion();
+  }
+}, [promotionId, loadPromotion]);
 
   const updatePromotionStatus =
     async (
@@ -597,7 +730,7 @@ export default function PromotionScreen() {
           (task) =>
             nextProgress[
               task.id
-            ] === true
+            ]?.completed === true
         );
 
       const {
@@ -664,6 +797,8 @@ export default function PromotionScreen() {
         }
 
         const {
+          data:
+            userPromotion,
           error:
             insertError,
         } =
@@ -675,52 +810,44 @@ export default function PromotionScreen() {
               {
                 user_id:
                   user.id,
+
                 promotion_id:
                   promotionId,
+
                 status:
-                  'active',
+                  'saved',
+
+                completed_at:
+                  null,
               },
               {
                 onConflict:
                   'user_id,promotion_id',
               }
-            );
+            )
+            .select('id')
+            .single();
 
-        if (
-          insertError
-        ) {
+        if (insertError) {
           throw insertError;
         }
+
+        setUserPromotionId(
+          userPromotion?.id ??
+            null
+        );
 
         setIsInMyPromotions(
           true
         );
 
-        /*
-         * POWIADOMIENIA
-         *
-         * Po dodaniu promocji
-         * planujemy przypomnienia
-         * dla niewykonanych
-         * zadań posiadających
-         * due_date.
-         */
-        const incompleteTasks =
-          tasks.filter(
-            (task) =>
-              progress[
-                task.id
-              ] !== true
-          );
-
-        await schedulePromotionTaskNotifications(
-          promotion.title,
-          incompleteTasks
+        setUserPromotionStatus(
+          'saved'
         );
 
         Alert.alert(
-          'Promocja dodana ✓',
-          'Dodaliśmy promocję do Twoich promocji i zaplanowaliśmy przypomnienia o terminach.'
+          'Promocja zapisana ✓',
+          'Znajdziesz ją w sekcji „Moje promocje”. Możesz rozpocząć ją później.'
         );
       } catch (
         err
@@ -740,6 +867,435 @@ export default function PromotionScreen() {
         );
       }
     };
+
+
+  const preparePromotionStart =
+    async () => {
+      if (
+        !promotionId ||
+        !userPromotionId
+      ) {
+        return;
+      }
+
+      try {
+        setStartingPromotion(
+          true
+        );
+
+        const [
+          periodTemplatesResponse,
+          taskTemplatesResponse,
+        ] = await Promise.all([
+          supabase
+            .from(
+              'promotion_period_templates'
+            )
+            .select(
+              'period_type'
+            )
+            .eq(
+              'promotion_id',
+              promotionId
+            ),
+
+          supabase
+            .from(
+              'task_templates'
+            )
+            .select(
+              'deadline_type'
+            )
+            .eq(
+              'promotion_id',
+              promotionId
+            ),
+        ]);
+
+        if (
+          periodTemplatesResponse.error
+        ) {
+          throw periodTemplatesResponse.error;
+        }
+
+        if (
+          taskTemplatesResponse.error
+        ) {
+          throw taskTemplatesResponse.error;
+        }
+
+        const periodTemplates =
+          periodTemplatesResponse.data ??
+          [];
+
+        const taskTemplates =
+          taskTemplatesResponse.data ??
+          [];
+
+        if (
+          periodTemplates.length === 0 &&
+          taskTemplates.length === 0
+        ) {
+          Alert.alert(
+            'Brak harmonogramu',
+            'Ta promocja nie ma jeszcze skonfigurowanego dynamicznego harmonogramu.'
+          );
+
+          return;
+        }
+
+        const periodTypes =
+          periodTemplates
+            .map(
+              row =>
+                row.period_type
+            )
+            .filter(Boolean);
+
+        const deadlineTypes =
+          taskTemplates
+            .map(
+              row =>
+                row.deadline_type
+            )
+            .filter(Boolean);
+
+        const needsAccountDate =
+          periodTypes.some(
+            type =>
+              ACCOUNT_PERIOD_TYPES.includes(
+                type
+              )
+          ) ||
+          deadlineTypes.some(
+            type =>
+              ACCOUNT_DEADLINE_TYPES.includes(
+                type
+              )
+          );
+
+        const needsJoinDate =
+          periodTypes.some(
+            type =>
+              JOIN_PERIOD_TYPES.includes(
+                type
+              )
+          ) ||
+          deadlineTypes.some(
+            type =>
+              JOIN_DEADLINE_TYPES.includes(
+                type
+              )
+          );
+
+        setRequireAccountOpenedAt(
+          needsAccountDate
+        );
+
+        setRequirePromotionRegisteredAt(
+          needsJoinDate
+        );
+
+        if (
+          !needsAccountDate &&
+          !needsJoinDate
+        ) {
+          await activatePromotion(
+            {}
+          );
+
+          return;
+        }
+
+        setStartPromotionModalVisible(
+          true
+        );
+      } catch (
+        err
+      ) {
+        console.error(
+          'PREPARE START ERROR:',
+          err
+        );
+
+        Alert.alert(
+          'Błąd',
+          'Nie udało się sprawdzić warunków rozpoczęcia promocji.'
+        );
+      } finally {
+        setStartingPromotion(
+          false
+        );
+      }
+    };
+
+
+  const activatePromotion =
+    async (
+      values: StartPromotionValues
+    ) => {
+      if (
+        !userPromotionId
+      ) {
+        return;
+      }
+
+      try {
+        setStartingPromotion(
+          true
+        );
+
+        const updatePayload:
+          Record<string, unknown> = {
+            activated_at:
+              new Date().toISOString(),
+            schedule_generated_at:
+              null,
+          };
+
+        if (
+          values.accountOpenedAt
+        ) {
+          updatePayload.account_opened_at =
+            formatDateForDatabase(
+              values.accountOpenedAt
+            );
+        }
+
+        if (
+          values.promotionRegisteredAt
+        ) {
+          updatePayload.promotion_registered_at =
+            formatDateForDatabase(
+              values.promotionRegisteredAt
+            );
+        }
+
+        const {
+          error:
+            updateDatesError,
+        } =
+          await supabase
+            .from(
+              'user_promotions'
+            )
+            .update(
+              updatePayload
+            )
+            .eq(
+              'id',
+              userPromotionId
+            );
+
+        if (
+          updateDatesError
+        ) {
+          throw updateDatesError;
+        }
+
+        const {
+          error:
+            scheduleError,
+        } =
+          await supabase.rpc(
+            'generate_user_promotion_schedule',
+            {
+              p_user_promotion_id:
+                userPromotionId,
+              p_force:
+                true,
+            }
+          );
+
+        if (
+          scheduleError
+        ) {
+          throw scheduleError;
+        }
+
+        const {
+          error:
+            statusError,
+        } =
+          await supabase
+            .from(
+              'user_promotions'
+            )
+            .update({
+              status:
+                'active',
+            })
+            .eq(
+              'id',
+              userPromotionId
+            );
+
+        if (
+          statusError
+        ) {
+          throw statusError;
+        }
+
+        try {
+          await syncUserPromotionNotifications(
+            userPromotionId
+          );
+        } catch (
+          notificationError
+        ) {
+          console.warn(
+            'NOTIFICATION SYNC WARNING:',
+            notificationError
+          );
+        }
+
+        setUserPromotionStatus(
+          'active'
+        );
+
+        setStartPromotionModalVisible(
+          false
+        );
+
+        setTimelineRefreshKey(
+          previous =>
+            previous + 1
+        );
+
+        Alert.alert(
+          'Promocja rozpoczęta ✓',
+          'Harmonogram został wygenerowany. Od teraz śledzimy Twoje terminy i postęp.'
+        );
+      } catch (
+        err
+      ) {
+        console.error(
+          'START PROMOTION ERROR:',
+          err
+        );
+
+        Alert.alert(
+          'Nie udało się rozpocząć promocji',
+          err instanceof Error
+            ? err.message
+            : 'Wystąpił nieoczekiwany błąd.'
+        );
+      } finally {
+        setStartingPromotion(
+          false
+        );
+      }
+    };
+
+
+  const removeFromMyPromotions =
+    async () => {
+      if (
+        !userPromotionId
+      ) {
+        return;
+      }
+
+      try {
+        setRemovingPromotion(
+          true
+        );
+
+        const {
+          data: {
+            user,
+          },
+        } =
+          await supabase.auth.getUser();
+
+        if (!user) {
+          return;
+        }
+
+        const {
+          error:
+            deleteError,
+        } =
+          await supabase
+            .from(
+              'user_promotions'
+            )
+            .delete()
+            .eq(
+              'id',
+              userPromotionId
+            )
+            .eq(
+              'user_id',
+              user.id
+            );
+
+        if (
+          deleteError
+        ) {
+          throw deleteError;
+        }
+
+        setIsInMyPromotions(
+          false
+        );
+
+        setUserPromotionStatus(
+          null
+        );
+
+        setUserPromotionId(
+          null
+        );
+
+        Alert.alert(
+          'Usunięto promocję',
+          'Promocja nie jest już w Twoich promocjach.'
+        );
+      } catch (
+        err
+      ) {
+        console.error(
+          'REMOVE PROMOTION ERROR:',
+          err
+        );
+
+        Alert.alert(
+          'Błąd',
+          'Nie udało się usunąć promocji.'
+        );
+      } finally {
+        setRemovingPromotion(
+          false
+        );
+      }
+    };
+
+
+  const confirmRemovePromotion =
+    () => {
+      Alert.alert(
+        'Usunąć promocję?',
+        'Usuniemy ją z Twoich promocji razem z zapisanym harmonogramem i postępem.',
+        [
+          {
+            text:
+              'Anuluj',
+            style:
+              'cancel',
+          },
+          {
+            text:
+              'Usuń',
+            style:
+              'destructive',
+            onPress:
+              removeFromMyPromotions,
+          },
+        ]
+      );
+    };
+
 
   const toggleTask =
     async (
@@ -817,19 +1373,17 @@ export default function PromotionScreen() {
         }
 
         const currentValue =
-          progress[
-            task.id
-          ] === true;
+          progress[task.id]?.completed === true;
 
-        const newValue =
-          !currentValue;
+        const newValue = !currentValue;
 
-        const nextProgress =
-          {
-            ...progress,
-            [task.id]:
-              newValue,
-          };
+        const nextProgress = {
+          ...progress,
+          [task.id]: {
+            completed: newValue,
+            current_count: newValue ? 1 : 0,
+          },
+        };
 
         /*
          * Optymistycznie
@@ -880,8 +1434,8 @@ export default function PromotionScreen() {
                 'user_task_progress'
               )
               .update({
-                completed:
-                  newValue,
+                completed: newValue,
+                current_count: newValue ? 1 : 0,
                 updated_at:
                   new Date().toISOString(),
               })
@@ -909,8 +1463,8 @@ export default function PromotionScreen() {
                   user.id,
                 task_id:
                   task.id,
-                completed:
-                  newValue,
+                completed: newValue,
+                current_count: newValue ? 1 : 0,
                 updated_at:
                   new Date().toISOString(),
               });
@@ -984,10 +1538,10 @@ export default function PromotionScreen() {
         setProgress(
           (previous) => ({
             ...previous,
-            [task.id]:
-              !previous[
-                task.id
-              ],
+            [task.id]: {
+              completed: !(previous[task.id]?.completed ?? false),
+              current_count: previous[task.id]?.current_count ?? 0,
+            },
           })
         );
 
@@ -1002,6 +1556,102 @@ export default function PromotionScreen() {
       }
     };
 
+  const changeCounterTask =
+    async (task: Task, delta: number) => {
+      if (!promotion) return;
+
+      const target = Math.max(task.target_count || 1, 1);
+      const previousCount = progress[task.id]?.current_count ?? 0;
+      const nextCount = Math.max(0, Math.min(target, previousCount + delta));
+
+      if (nextCount === previousCount) return;
+
+      const nextCompleted = nextCount >= target;
+      const previousEntry = progress[task.id] ?? { completed: false, current_count: 0 };
+      const nextProgress: ProgressMap = {
+        ...progress,
+        [task.id]: { completed: nextCompleted, current_count: nextCount },
+      };
+
+      try {
+        setSavingTaskId(task.id);
+
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          Alert.alert('Zaloguj się', 'Musisz być zalogowany, aby zapisywać postęp.');
+          return;
+        }
+
+        if (!isInMyPromotions) {
+          const { error: promotionInsertError } = await supabase
+            .from('user_promotions')
+            .upsert(
+              { user_id: user.id, promotion_id: promotion.id, status: 'active' },
+              { onConflict: 'user_id,promotion_id' }
+            );
+          if (promotionInsertError) throw promotionInsertError;
+          setIsInMyPromotions(true);
+          setUserPromotionStatus('active');
+        }
+
+        setProgress(nextProgress);
+
+        const { error: progressError } = await supabase
+          .from('user_task_progress')
+          .upsert(
+            {
+              user_id: user.id,
+              task_id: task.id,
+              completed: nextCompleted,
+              current_count: nextCount,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'user_id,task_id' }
+          );
+
+        if (progressError) throw progressError;
+
+        if (nextCompleted) {
+          await cancelTaskNotifications(task.id);
+        } else if (previousEntry.completed) {
+          await scheduleTaskNotifications({
+            taskId: task.id,
+            taskTitle: task.title,
+            promotionTitle: promotion.title,
+            dueDate: task.due_date,
+          });
+        }
+
+        await updatePromotionStatus(user.id, nextProgress);
+      } catch (err) {
+        console.error('COUNTER TASK ERROR:', err);
+        setProgress(previous => ({ ...previous, [task.id]: previousEntry }));
+        Alert.alert('Błąd', 'Nie udało się zapisać licznika.');
+      } finally {
+        setSavingTaskId(null);
+      }
+    };
+
+  const groupedTasks = useMemo(() => {
+    const groups = new Map<string, { label: string; order: number; tasks: Task[] }>();
+
+    for (const task of tasks) {
+      const label = task.period_label?.trim() || 'Pozostałe warunki';
+      const order = task.period_order ?? 9999;
+      const key = `${order}::${label}`;
+
+      if (!groups.has(key)) groups.set(key, { label, order, tasks: [] });
+      groups.get(key)!.tasks.push(task);
+    }
+
+    return Array.from(groups.values())
+      .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label, 'pl'))
+      .map(group => ({
+        ...group,
+        tasks: [...group.tasks].sort((a, b) => a.task_order - b.task_order),
+      }));
+  }, [tasks]);
+
   const completedCount =
     useMemo(
       () =>
@@ -1009,7 +1659,7 @@ export default function PromotionScreen() {
           (task) =>
             progress[
               task.id
-            ] === true
+            ]?.completed === true
         ).length,
       [
         tasks,
@@ -1377,8 +2027,10 @@ export default function PromotionScreen() {
                 styles.trackingTitle
               }
             >
-              ✓ W Twoich
-              promocjach
+              {userPromotionStatus ===
+              'saved'
+                ? '✓ Zapisana w Twoich promocjach'
+                : '✓ W Twoich promocjach'}
             </Text>
 
             <Text
@@ -1386,10 +2038,43 @@ export default function PromotionScreen() {
                 styles.trackingDescription
               }
             >
-              Śledzimy Twój
-              postęp i terminy
-              tej promocji.
+              {userPromotionStatus ===
+              'saved'
+                ? 'Promocja jest zapisana. Rozpocznij ją dopiero, gdy faktycznie do niej przystąpisz.'
+                : 'Śledzimy Twój postęp i terminy tej promocji.'}
             </Text>
+
+            {userPromotionStatus ===
+              'saved' && (
+              <TouchableOpacity
+                style={
+                  styles.startTrackingButton
+                }
+                activeOpacity={
+                  0.85
+                }
+                disabled={
+                  startingPromotion
+                }
+                onPress={
+                  preparePromotionStart
+                }
+              >
+                {startingPromotion ? (
+                  <ActivityIndicator
+                    color="#FFFFFF"
+                  />
+                ) : (
+                  <Text
+                    style={
+                      styles.startTrackingButtonText
+                    }
+                  >
+                    Rozpocznij promocję
+                  </Text>
+                )}
+              </TouchableOpacity>
+            )}
           </View>
         ) : (
           <TouchableOpacity
@@ -1598,244 +2283,219 @@ export default function PromotionScreen() {
           </View>
         )}
 
+
+       
+
+{(userPromotionStatus === 'active' ||
+  userPromotionStatus === 'completed') &&
+  promotionId && (
+  <>
+    <UserPromotionSchedule
+      promotionId={promotionId}
+      onTaskChanged={() =>
+        setTimelineRefreshKey(
+          previous => previous + 1
+        )
+      }
+    />
+
+    <UserPromotionTimeline
+      key={timelineRefreshKey}
+      promotionId={promotionId}
+    />
+  </>
+)}
+
+
+
         {/* CHECKLISTA */}
 
-        <View
-          style={
-            styles.sectionCard
-          }
-        >
-          <Text
-            style={
-              styles.sectionTitle
-            }
-          >
-            Jak zdobyć premię?
-          </Text>
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>Jak zdobyć premię?</Text>
 
-          {tasks.length >
-          0 ? (
+          {tasks.length > 0 ? (
             <>
-              <View
-                style={
-                  styles.progressHeader
-                }
-              >
-                <Text
-                  style={
-                    styles.progressText
-                  }
-                >
-                  {
-                    completedCount
-                  }{' '}
-                  z{' '}
-                  {
-                    tasks.length
-                  }{' '}
-                  warunków
+              <View style={styles.progressHeader}>
+                <Text style={styles.progressText}>
+                  {completedCount} z {tasks.length} warunków
                 </Text>
-
-                <Text
-                  style={
-                    styles.progressPercent
-                  }
-                >
-                  {
-                    progressPercent
-                  }
-                  %
-                </Text>
+                <Text style={styles.progressPercent}>{progressPercent}%</Text>
               </View>
 
-              <View
-                style={
-                  styles.progressTrack
-                }
-              >
-                <View
-                  style={[
-                    styles.progressBar,
-                    {
-                      width: `${progressPercent}%`,
-                    },
-                  ]}
-                />
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressBar, { width: `${progressPercent}%` }]} />
               </View>
 
-              <View
-                style={
-                  styles.tasksContainer
-                }
-              >
-                {tasks.map(
-                  (
-                    task,
-                    index
-                  ) => {
-                    const completed =
-                      progress[
-                        task.id
-                      ] === true;
+              <View style={styles.tasksContainer}>
+                {groupedTasks.map(group => {
+                  const groupCompleted = group.tasks.filter(
+                    task => progress[task.id]?.completed === true
+                  ).length;
 
-                    const deadline =
-                      getTaskDeadlineLabel(
-                        task.due_date
-                      );
-
-                    const saving =
-                      savingTaskId ===
-                      task.id;
-
-                    return (
-                      <TouchableOpacity
-                        key={
-                          task.id
-                        }
-                        style={[
-                          styles.taskCard,
-                          completed &&
-                            styles.taskCardCompleted,
-                        ]}
-                        activeOpacity={
-                          0.8
-                        }
-                        disabled={
-                          saving
-                        }
-                        onPress={() =>
-                          toggleTask(
-                            task
-                          )
-                        }
-                      >
-                        <View
-                          style={
-                            styles.taskTopRow
-                          }
-                        >
-                          <View
-                            style={[
-                              styles.taskNumber,
-                              completed &&
-                                styles.taskNumberCompleted,
-                            ]}
-                          >
-                            <Text
-                              style={[
-                                styles.taskNumberText,
-                                completed &&
-                                  styles.taskNumberTextCompleted,
-                              ]}
-                            >
-                              {index +
-                                1}
-                            </Text>
-                          </View>
-
-                          <View
-                            style={
-                              styles.taskContent
-                            }
-                          >
-                            <Text
-                              style={[
-                                styles.taskTitle,
-                                completed &&
-                                  styles.taskTitleCompleted,
-                              ]}
-                            >
-                              {
-                                task.title
-                              }
-                            </Text>
-
-                            {task.description && (
-                              <Text
-                                style={[
-                                  styles.taskDescription,
-                                  completed &&
-                                    styles.taskDescriptionCompleted,
-                                ]}
-                              >
-                                {
-                                  task.description
-                                }
-                              </Text>
-                            )}
-
-                            {deadline && (
-                              <View
-                                style={[
-                                  styles.deadlineBadge,
-                                  {
-                                    backgroundColor:
-                                      deadline.backgroundColor,
-                                  },
-                                ]}
-                              >
-                                <Text
-                                  style={[
-                                    styles.deadlineText,
-                                    {
-                                      color:
-                                        deadline.color,
-                                    },
-                                  ]}
-                                >
-                                  ⏱{' '}
-                                  {
-                                    deadline.label
-                                  }
-                                </Text>
-                              </View>
-                            )}
-                          </View>
-
-                          <View
-                            style={[
-                              styles.checkbox,
-                              completed &&
-                                styles.checkboxCompleted,
-                            ]}
-                          >
-                            {saving ? (
-                              <ActivityIndicator
-                                size="small"
-                                color={
-                                  completed
-                                    ? '#FFFFFF'
-                                    : '#2563EB'
-                                }
-                              />
-                            ) : (
-                              completed && (
-                                <Text
-                                  style={
-                                    styles.checkmark
-                                  }
-                                >
-                                  ✓
-                                </Text>
-                              )
-                            )}
-                          </View>
+                  return (
+                    <View key={`${group.order}-${group.label}`} style={styles.periodGroup}>
+                      <View style={styles.periodHeader}>
+                        <View>
+                          <Text style={styles.periodTitle}>{group.label}</Text>
+                          <Text style={styles.periodProgressText}>
+                            {groupCompleted} z {group.tasks.length} wykonane
+                          </Text>
                         </View>
-                      </TouchableOpacity>
-                    );
-                  }
-                )}
+
+                        {groupCompleted === group.tasks.length && (
+                          <View style={styles.periodDoneBadge}>
+                            <Text style={styles.periodDoneText}>✓</Text>
+                          </View>
+                        )}
+                      </View>
+
+                      <View style={styles.periodTasks}>
+                        {group.tasks.map(task => {
+                          const taskProgress = progress[task.id] ?? {
+                            completed: false,
+                            current_count: 0,
+                          };
+                          const completed = taskProgress.completed;
+                          const deadline = getTaskDeadlineLabel(task.due_date);
+                          const saving = savingTaskId === task.id;
+                          const isCounter = task.task_type === 'counter';
+                          const target = Math.max(task.target_count || 1, 1);
+                          const currentCount = Math.min(taskProgress.current_count, target);
+
+                          return (
+                            <View
+                              key={task.id}
+                              style={[
+                                styles.taskCard,
+                                completed && styles.taskCardCompleted,
+                              ]}
+                            >
+                              <View style={styles.taskTopRow}>
+                                <View style={styles.taskContent}>
+                                  <Text
+                                    style={[
+                                      styles.taskTitle,
+                                      completed && styles.taskTitleCompleted,
+                                    ]}
+                                  >
+                                    {task.title}
+                                  </Text>
+
+                                  {task.description && (
+                                    <Text
+                                      style={[
+                                        styles.taskDescription,
+                                        completed && styles.taskDescriptionCompleted,
+                                      ]}
+                                    >
+                                      {task.description}
+                                    </Text>
+                                  )}
+
+                                  {deadline && (
+                                    <View
+                                      style={[
+                                        styles.deadlineBadge,
+                                        { backgroundColor: deadline.backgroundColor },
+                                      ]}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.deadlineText,
+                                          { color: deadline.color },
+                                        ]}
+                                      >
+                                        ⏱ {deadline.label}
+                                      </Text>
+                                    </View>
+                                  )}
+                                </View>
+
+                                {!isCounter && (
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.checkbox,
+                                      completed && styles.checkboxCompleted,
+                                    ]}
+                                    activeOpacity={0.8}
+                                    disabled={saving}
+                                    onPress={() => toggleTask(task)}
+                                  >
+                                    {saving ? (
+                                      <ActivityIndicator
+                                        size="small"
+                                        color={completed ? '#FFFFFF' : '#2563EB'}
+                                      />
+                                    ) : (
+                                      completed && <Text style={styles.checkmark}>✓</Text>
+                                    )}
+                                  </TouchableOpacity>
+                                )}
+                              </View>
+
+                              {isCounter && (
+                                <View style={styles.counterRow}>
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.counterButton,
+                                      (saving || currentCount <= 0) && styles.counterButtonDisabled,
+                                    ]}
+                                    disabled={saving || currentCount <= 0}
+                                    onPress={() => changeCounterTask(task, -1)}
+                                  >
+                                    <Text style={styles.counterButtonText}>−</Text>
+                                  </TouchableOpacity>
+
+                                  <View style={styles.counterValueBox}>
+                                    {saving ? (
+                                      <ActivityIndicator size="small" color="#2563EB" />
+                                    ) : (
+                                      <>
+                                        <Text
+                                          style={[
+                                            styles.counterValue,
+                                            completed && styles.counterValueCompleted,
+                                          ]}
+                                        >
+                                          {currentCount} / {target}
+                                        </Text>
+                                        <Text style={styles.counterLabel}>wykonano</Text>
+                                      </>
+                                    )}
+                                  </View>
+
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.counterButton,
+                                      completed && styles.counterButtonCompleted,
+                                      (saving || currentCount >= target) && styles.counterButtonDisabled,
+                                    ]}
+                                    disabled={saving || currentCount >= target}
+                                    onPress={() => changeCounterTask(task, 1)}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.counterButtonText,
+                                        completed && styles.counterButtonTextCompleted,
+                                      ]}
+                                    >
+                                      +
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                              )}
+                            </View>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  );
+                })}
               </View>
             </>
           ) : (
-            <Text
-              style={
-                styles.noTasksText
-              }
-            >
-              Dla tej promocji
-              nie dodano jeszcze
-              warunków.
+            <Text style={styles.noTasksText}>
+              Dla tej promocji nie dodano jeszcze warunków.
             </Text>
           )}
         </View>
@@ -1939,6 +2599,45 @@ export default function PromotionScreen() {
           </TouchableOpacity>
         )}
 
+
+        {isInMyPromotions && (
+          <View
+            style={
+              styles.managePromotionSection
+            }
+          >
+            <TouchableOpacity
+              style={
+                styles.removePromotionButton
+              }
+              activeOpacity={
+                0.7
+              }
+              disabled={
+                removingPromotion
+              }
+              onPress={
+                confirmRemovePromotion
+              }
+            >
+              {removingPromotion ? (
+                <ActivityIndicator
+                  size="small"
+                  color="#B91C1C"
+                />
+              ) : (
+                <Text
+                  style={
+                    styles.removePromotionText
+                  }
+                >
+                  Usuń z moich promocji
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+
         <Text
           style={
             styles.disclaimer
@@ -1950,6 +2649,35 @@ export default function PromotionScreen() {
           regulamin banku.
         </Text>
       </ScrollView>
+
+      <AddPromotionModal
+        visible={
+          startPromotionModalVisible
+        }
+        loading={
+          startingPromotion
+        }
+        requireAccountOpenedAt={
+          requireAccountOpenedAt
+        }
+        requirePromotionRegisteredAt={
+          requirePromotionRegisteredAt
+        }
+        onClose={() => {
+          if (
+            startingPromotion
+          ) {
+            return;
+          }
+
+          setStartPromotionModalVisible(
+            false
+          );
+        }}
+        onConfirm={
+          activatePromotion
+        }
+      />
     </SafeAreaView>
   );
 }
@@ -2393,6 +3121,119 @@ const styles =
       fontWeight: '900',
     },
 
+    periodGroup: {
+      backgroundColor: '#F9FAFB',
+      borderRadius: 18,
+      padding: 14,
+      borderWidth: 1,
+      borderColor: '#E5E7EB',
+    },
+
+    periodHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 12,
+      paddingHorizontal: 2,
+    },
+
+    periodTitle: {
+      color: '#111827',
+      fontSize: 16,
+      fontWeight: '800',
+    },
+
+    periodProgressText: {
+      color: '#6B7280',
+      fontSize: 12,
+      fontWeight: '600',
+      marginTop: 3,
+    },
+
+    periodDoneBadge: {
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      backgroundColor: '#DCFCE7',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+
+    periodDoneText: {
+      color: '#15803D',
+      fontSize: 16,
+      fontWeight: '900',
+    },
+
+    periodTasks: {
+      gap: 9,
+    },
+
+    counterRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginTop: 14,
+      gap: 12,
+    },
+
+    counterButton: {
+      width: 44,
+      height: 44,
+      borderRadius: 14,
+      borderWidth: 1.5,
+      borderColor: '#BFDBFE',
+      backgroundColor: '#EFF6FF',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+
+    counterButtonCompleted: {
+      backgroundColor: '#DCFCE7',
+      borderColor: '#BBF7D0',
+    },
+
+    counterButtonDisabled: {
+      opacity: 0.35,
+    },
+
+    counterButtonText: {
+      color: '#2563EB',
+      fontSize: 25,
+      lineHeight: 28,
+      fontWeight: '700',
+    },
+
+    counterButtonTextCompleted: {
+      color: '#15803D',
+    },
+
+    counterValueBox: {
+      minWidth: 86,
+      minHeight: 48,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+
+    counterValue: {
+      color: '#111827',
+      fontSize: 18,
+      fontWeight: '900',
+    },
+
+    counterValueCompleted: {
+      color: '#15803D',
+    },
+
+    counterLabel: {
+      color: '#9CA3AF',
+      fontSize: 10,
+      fontWeight: '700',
+      marginTop: 2,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
+
     noTasksText: {
       color: '#6B7280',
       fontSize: 14,
@@ -2460,6 +3301,40 @@ const styles =
       color: '#2563EB',
       fontSize: 15,
       fontWeight: '700',
+    },
+
+    startTrackingButton: {
+      marginTop: 16,
+      backgroundColor: '#2563EB',
+      minHeight: 52,
+      borderRadius: 14,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+
+    startTrackingButtonText: {
+      color: '#FFFFFF',
+      fontSize: 15,
+      fontWeight: '800',
+    },
+
+    managePromotionSection: {
+      marginTop: 26,
+      paddingTop: 18,
+      borderTopWidth: 1,
+      borderTopColor: '#E5E7EB',
+      alignItems: 'center',
+    },
+
+    removePromotionButton: {
+      paddingHorizontal: 18,
+      paddingVertical: 12,
+    },
+
+    removePromotionText: {
+      color: '#B91C1C',
+      fontSize: 13,
+      fontWeight: '600',
     },
 
     disclaimer: {
